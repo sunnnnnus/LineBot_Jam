@@ -76,6 +76,8 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("(getdate())");
             entity.Property(e => e.DisplayName).HasMaxLength(100);
             entity.Property(e => e.LineUserId).HasMaxLength(50);
+            entity.Property(e => e.PendingContent).HasMaxLength(200);
+            entity.Property(e => e.PendingRawInput).HasMaxLength(1000);
         });
 
         OnModelCreatingPartial(modelBuilder);

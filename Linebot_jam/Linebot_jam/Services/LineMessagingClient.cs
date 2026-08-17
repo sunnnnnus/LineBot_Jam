@@ -30,6 +30,39 @@ public class LineMessagingClient : ILineMessagingClient
         }
     }
 
+    public async Task ReplyWithLinkButtonAsync(string replyToken, string text, string buttonLabel, string url, CancellationToken cancellationToken = default)
+    {
+        var payload = new
+        {
+            replyToken,
+            messages = new object[]
+            {
+                new
+                {
+                    type = "template",
+                    altText = text,
+                    template = new
+                    {
+                        type = "buttons",
+                        text,
+                        actions = new object[]
+                        {
+                            new { type = "uri", label = buttonLabel, uri = url }
+                        }
+                    }
+                }
+            }
+        };
+
+        using var response = await _httpClient.PostAsJsonAsync("v2/bot/message/reply", payload, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            _logger.LogError("LINE Reply API call (link button) failed: {StatusCode} {Body}", response.StatusCode, body);
+        }
+    }
+
     public async Task<bool> PushMessageAsync(string userId, string text, CancellationToken cancellationToken = default)
     {
         var payload = new

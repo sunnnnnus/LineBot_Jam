@@ -2,5 +2,5 @@ namespace Linebot_jam.Services;
 
 public interface IGeminiClient
 {
-    Task<string?> GenerateReplyAsync(string userMessage, string context, CancellationToken cancellationToken = default);
+    Task<GeminiResult> GenerateAsync(string userInput, string systemInstruction, CancellationToken cancellationToken = default);
 }

@@ -13,5 +13,13 @@ public partial class User
 
     public DateTime CreatedAt { get; set; }
 
+    public string? PendingContent { get; set; }
+
+    public DateTime? PendingDueAt { get; set; }
+
+    public string? PendingRawInput { get; set; }
+
+    public DateTime? PendingUpdatedAt { get; set; }
+
     public virtual ICollection<TaskItem> Tasks { get; set; } = new List<TaskItem>();
 }
