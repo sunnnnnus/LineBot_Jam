@@ -22,23 +22,27 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<User> Users { get; set; }
 
+    // Fallback used only by design-time tooling (e.g. `dotnet ef migrations`) when no DI-provided
+    // options are available. Runtime configuration always comes from Program.cs + user-secrets.
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-#warning To protect potentially sensitive information in your connection string, you should move it out of source code. You can avoid scaffolding the connection string by using the Name= syntax to read it from configuration - see https://go.microsoft.com/fwlink/?linkid=2131148. For more guidance on storing connection strings, see https://go.microsoft.com/fwlink/?LinkId=723263.
-        => optionsBuilder.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=LinebotJam;Trusted_Connection=True;TrustServerCertificate=True;");
+        => optionsBuilder.UseNpgsql("Host=localhost;Port=5432;Database=LinebotJam;Username=postgres;Password=CHANGE_ME");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ReminderLog>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("PK__REMINDER__3214EC0790711C69");
+            entity.HasKey(e => e.Id).HasName("REMINDER_LOGS_pkey");
 
             entity.ToTable("REMINDER_LOGS");
 
             entity.HasIndex(e => new { e.TaskId, e.ReminderType }, "UQ_ReminderLogs_Task_Type").IsUnique();
 
+            entity.Property(e => e.Id).UseIdentityAlwaysColumn();
             entity.Property(e => e.Channel).HasMaxLength(20);
             entity.Property(e => e.ReminderType).HasMaxLength(20);
-            entity.Property(e => e.SentAt).HasDefaultValueSql("(getdate())");
+            entity.Property(e => e.SentAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnType("timestamp without time zone");
 
             entity.HasOne(d => d.Task).WithMany(p => p.ReminderLogs)
                 .HasForeignKey(d => d.TaskId)
@@ -48,16 +52,22 @@ public partial class AppDbContext : DbContext
 
         modelBuilder.Entity<TaskItem>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("PK__TASKS__3214EC07C60489F9");
+            entity.HasKey(e => e.Id).HasName("TASKS_pkey");
 
             entity.ToTable("TASKS");
 
+            entity.Property(e => e.Id).UseIdentityAlwaysColumn();
             entity.Property(e => e.Content).HasMaxLength(200);
-            entity.Property(e => e.CreatedAt).HasDefaultValueSql("(getdate())");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnType("timestamp without time zone");
+            entity.Property(e => e.DueAt).HasColumnType("timestamp without time zone");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)
-                .HasDefaultValue("pending");
-            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("(getdate())");
+                .HasDefaultValueSql("'pending'::character varying");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnType("timestamp without time zone");
 
             entity.HasOne(d => d.User).WithMany(p => p.Tasks)
                 .HasForeignKey(d => d.UserId)
@@ -67,17 +77,22 @@ public partial class AppDbContext : DbContext
 
         modelBuilder.Entity<User>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("PK__USERS__3214EC0744F88F2F");
+            entity.HasKey(e => e.Id).HasName("USERS_pkey");
 
             entity.ToTable("USERS");
 
-            entity.HasIndex(e => e.LineUserId, "UQ__USERS__1035A751EE398B96").IsUnique();
+            entity.HasIndex(e => e.LineUserId, "USERS_LineUserId_key").IsUnique();
 
-            entity.Property(e => e.CreatedAt).HasDefaultValueSql("(getdate())");
+            entity.Property(e => e.Id).UseIdentityAlwaysColumn();
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnType("timestamp without time zone");
             entity.Property(e => e.DisplayName).HasMaxLength(100);
             entity.Property(e => e.LineUserId).HasMaxLength(50);
             entity.Property(e => e.PendingContent).HasMaxLength(200);
+            entity.Property(e => e.PendingDueAt).HasColumnType("timestamp without time zone");
             entity.Property(e => e.PendingRawInput).HasMaxLength(1000);
+            entity.Property(e => e.PendingUpdatedAt).HasColumnType("timestamp without time zone");
         });
 
         OnModelCreatingPartial(modelBuilder);

@@ -7,10 +7,28 @@ using Linebot_jam.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Render assigns the listen port via $PORT; fall back to 8080 for local container runs.
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+
 // Add services to the container.
 
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrEmpty(connectionString))
+{
+    var dbHost = Environment.GetEnvironmentVariable("DB_HOST");
+    if (!string.IsNullOrEmpty(dbHost))
+    {
+        connectionString =
+            $"Host={dbHost};" +
+            $"Port={Environment.GetEnvironmentVariable("DB_PORT")};" +
+            $"Database={Environment.GetEnvironmentVariable("DB_NAME")};" +
+            $"Username={Environment.GetEnvironmentVariable("DB_USER")};" +
+            $"Password={Environment.GetEnvironmentVariable("DB_PASSWORD")}";
+    }
+}
+
+builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 
 builder.Services.Configure<LineOptions>(builder.Configuration.GetSection("Line"));
 builder.Services.AddSingleton<ILineSignatureValidator, LineSignatureValidator>();
@@ -44,10 +62,16 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// Render terminates TLS at its edge and forwards plain HTTP internally,
+// so redirecting to HTTPS inside the container would be wrong here.
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthorization();
 
+app.MapGet("/health", () => Results.Ok("healthy"));
 app.MapControllers();
 
 app.Run();

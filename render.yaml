@@ -1,0 +1,47 @@
+databases:
+  - name: linebot-jam-db
+    plan: free
+    databaseName: linebotjam
+    user: linebotjam
+
+services:
+  - type: web
+    name: linebot-jam
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Linebot_jam/Linebot_jam/Dockerfile
+    dockerContext: ./Linebot_jam/Linebot_jam
+    healthCheckPath: /health
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: DB_HOST
+        fromDatabase:
+          name: linebot-jam-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: linebot-jam-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: linebot-jam-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: linebot-jam-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: linebot-jam-db
+          property: password
+      - key: Line__ChannelSecret
+        sync: false
+      - key: Line__ChannelAccessToken
+        sync: false
+      - key: Gemini__ApiKey
+        sync: false
+      - key: Gemini__Model
+        value: gemini-3.7-flash
+      - key: Reminder__IntervalMinutes
+        value: "60"
