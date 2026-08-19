@@ -304,6 +304,8 @@ public class LineWebhookController : ControllerBase
         }
 
         sb.AppendLine("如果使用者只是聊天或詢問既有待辦事項,不要呼叫任何函式,直接文字回覆。");
+        sb.AppendLine("使用者自己的待辦清單已經在上面提供,不需要為了任務相關問題使用搜尋工具。");
+        sb.AppendLine("只有使用者問到需要即時或外部資訊的問題(例如天氣、匯率、新聞、路況)時,才使用 google_search 工具查詢後再回答。");
         return sb.ToString();
     }
 }

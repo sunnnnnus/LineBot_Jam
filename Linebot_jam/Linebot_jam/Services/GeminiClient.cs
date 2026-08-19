@@ -7,7 +7,7 @@ namespace Linebot_jam.Services;
 
 public class GeminiClient : IGeminiClient
 {
-    private static readonly object Tools = new[]
+    private static readonly object Tools = new object[]
     {
         new
         {
@@ -63,6 +63,10 @@ public class GeminiClient : IGeminiClient
                     }
                 }
             }
+        },
+        new
+        {
+            googleSearch = new { }
         }
     };
 
