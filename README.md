@@ -46,11 +46,11 @@ AI 判斷使用者意圖後,行為分三種:
    ┌────┴────┐
    ▼是        ▼否(或沒有等待確認的提議)
 直接處理    呼叫 AI(Groq)
-(零延遲)   (帶 create_task / ask_clarification / confirm_task / cancel_task 四個工具)
+(零延遲)   (帶 create_tasks / ask_clarification / confirm_task / cancel_task 四個工具)
    │             │
    │      ┌──────┼──────┬──────────┐
    │      ▼      ▼      ▼          ▼
-   │  create_task ask_clarification confirm_task/cancel_task  純文字
+   │  create_tasks ask_clarification confirm_task/cancel_task  純文字
    │      │           │              │                    (聊天,不留記憶)
    │      ▼           ▼              ▼
    │  存為暫存提議   存對話上下文    真正寫入/清空 TASKS
@@ -61,7 +61,7 @@ AI 判斷使用者意圖後,行為分三種:
           回覆使用者(LINE Reply API)
 
   ※ AI API 失敗時:先試固定格式(新增 事項 M/d HH:mm)搶救,
-    還是不行則回覆「前往 ChatGPT」的連結按鈕
+    還是不行則保留未過期提議，回覆稍後重試及固定格式提示
 ```
 
 > 「確定/取消」精確字眼命中時直接本地處理,不等 AI;其他說法(「可以」「先不要好了」等)一樣能正確送出 `confirm_task`/`cancel_task`,只是要多等一次 API 呼叫。
@@ -72,7 +72,7 @@ AI 判斷使用者意圖後,行為分三種:
 排程器(BackgroundService,每分鐘執行)
         │
         ▼
-查詢到期任務(依優先順序排序,比對 REMINDER_LOGS 避免重複通知)
+查詢到期任務(選擇當下適用階段,比對 REMINDER_LOGS 避免重複通知)
         │
         ▼
    推播 LINE 訊息(Push API)
@@ -95,8 +95,7 @@ AI 判斷使用者意圖後,行為分三種:
 ├─ "LineUserId"        VARCHAR(50)   UNIQUE      -- LINE 使用者識別碼
 ├─ "DisplayName"       VARCHAR(100)  NULL
 ├─ "CreatedAt"         TIMESTAMP     DEFAULT NOW()
-├─ "PendingContent"    VARCHAR(200)   NULL   -- AI 對話式新增的暫存狀態(等待確認/補充用)
-├─ "PendingDueAt"      TIMESTAMP      NULL
+├─ "PendingTasksJson"  TEXT           NULL   -- 待確認的多筆提議(JSON 陣列)
 ├─ "PendingRawInput"   VARCHAR(1000)  NULL
 └─ "PendingUpdatedAt"  TIMESTAMP      NULL   -- 超過 10 分鐘視為過期
 
