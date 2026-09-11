@@ -40,10 +40,10 @@ builder.Services.AddHttpClient<ILineMessagingClient, LineMessagingClient>((sp, c
         new AuthenticationHeaderValue("Bearer", lineOptions.ChannelAccessToken);
 });
 
-builder.Services.Configure<GeminiOptions>(builder.Configuration.GetSection("Gemini"));
-builder.Services.AddHttpClient<IGeminiClient, GeminiClient>(client =>
+builder.Services.Configure<GroqOptions>(builder.Configuration.GetSection("Groq"));
+builder.Services.AddHttpClient<IAiClient, GroqClient>(client =>
 {
-    client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/");
+    client.BaseAddress = new Uri("https://api.groq.com/");
 });
 
 builder.Services.AddHostedService<ReminderBackgroundService>();

@@ -39,9 +39,9 @@ services:
         sync: false
       - key: Line__ChannelAccessToken
         sync: false
-      - key: Gemini__ApiKey
+      - key: Groq__ApiKey
         sync: false
-      - key: Gemini__Model
-        value: gemini-3.7-flash
+      - key: Groq__Model
+        value: llama-3.3-70b-versatile
       - key: Reminder__IntervalMinutes
         value: "60"

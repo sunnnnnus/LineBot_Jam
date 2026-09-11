@@ -1,0 +1,172 @@
+using System.Net.Http.Json;
+using System.Text.Json;
+using Linebot_jam.Options;
+using Microsoft.Extensions.Options;
+
+namespace Linebot_jam.Services;
+
+public class GroqClient : IAiClient
+{
+    private static readonly object[] Tools =
+    {
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "create_task",
+                description = "當使用者的訊息包含足夠資訊(要做的事、以及明確的到期日期時間)可以新增一筆待辦提醒時呼叫此函式。",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        content = new { type = "string", description = "待辦事項的簡短內容" },
+                        due_at = new { type = "string", description = "到期時間,ISO 8601 格式,例如 2026-08-20T18:00:00" }
+                    },
+                    required = new[] { "content", "due_at" }
+                }
+            }
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "ask_clarification",
+                description = "當使用者的訊息看起來想新增待辦提醒,但缺少必要資訊(例如沒有講明確時間)時呼叫此函式,提出一個問題來追問。",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        question = new { type = "string", description = "要反問使用者的問題" }
+                    },
+                    required = new[] { "question" }
+                }
+            }
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "confirm_task",
+                description = "當目前有一個等待使用者確認的待辦提議,且使用者的回覆表示同意、確定要新增(不論用什麼說法)時呼叫此函式。",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new { }
+                }
+            }
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "cancel_task",
+                description = "當目前有一個等待使用者確認的待辦提議,且使用者的回覆表示不要、取消(不論用什麼說法)時呼叫此函式。",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new { }
+                }
+            }
+        }
+    };
+
+    private readonly HttpClient _httpClient;
+    private readonly GroqOptions _options;
+    private readonly ILogger<GroqClient> _logger;
+
+    public GroqClient(HttpClient httpClient, IOptions<GroqOptions> options, ILogger<GroqClient> logger)
+    {
+        _httpClient = httpClient;
+        _options = options.Value;
+        _logger = logger;
+    }
+
+    public async Task<AiResult> GenerateAsync(string userInput, string systemInstruction, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(_options.ApiKey))
+        {
+            _logger.LogWarning("Groq API key not configured.");
+            return AiResult.Failure();
+        }
+
+        var payload = new
+        {
+            model = _options.Model,
+            messages = new[]
+            {
+                new { role = "system", content = systemInstruction },
+                new { role = "user", content = userInput }
+            },
+            tools = Tools
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "openai/v1/chat/completions")
+        {
+            Content = JsonContent.Create(payload)
+        };
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Groq API request failed.");
+            return AiResult.Failure();
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogError("Groq API call failed: {StatusCode} {Body}", response.StatusCode, body);
+                return AiResult.Failure();
+            }
+
+            try
+            {
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+                var message = doc.RootElement
+                    .GetProperty("choices")[0]
+                    .GetProperty("message");
+
+                if (message.TryGetProperty("tool_calls", out var toolCalls)
+                    && toolCalls.ValueKind == JsonValueKind.Array
+                    && toolCalls.GetArrayLength() > 0)
+                {
+                    var firstCall = toolCalls[0].GetProperty("function");
+                    var name = firstCall.GetProperty("name").GetString();
+                    var argsJson = firstCall.GetProperty("arguments").GetString();
+
+                    JsonElement? args = null;
+                    if (!string.IsNullOrEmpty(argsJson))
+                    {
+                        using var argsDoc = JsonDocument.Parse(argsJson);
+                        args = argsDoc.RootElement.Clone();
+                    }
+
+                    return new AiResult { Success = true, FunctionName = name, FunctionArgs = args };
+                }
+
+                var text = message.TryGetProperty("content", out var contentEl) ? contentEl.GetString() : null;
+                return new AiResult { Success = true, Text = text };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to parse Groq response.");
+                return AiResult.Failure();
+            }
+        }
+    }
+}

@@ -1,13 +1,13 @@
 # LineBot_Jam — LINE 任務提醒 Bot
 
-使用者可以直接用口語化的方式跟 LINE Bot 說要新增什麼待辦事項(例如「明天下午6點提醒我倒垃圾」),由 Gemini API(function calling)判斷意圖、解析事項與到期時間,資訊不足時會主動反問,確認後才寫入資料庫;到期前主動分階段推播提醒。非新增任務相關的訊息則由 Gemini 自由對話回覆(帶入使用者目前的待辦事項作為 context)。
+使用者可以直接用口語化的方式跟 LINE Bot 說要新增什麼待辦事項(例如「明天下午6點提醒我倒垃圾」),由 Groq API(function calling,OpenAI 相容格式)判斷意圖、解析事項與到期時間,資訊不足時會主動反問,確認後才寫入資料庫;到期前主動分階段推播提醒。非新增任務相關的訊息則由 AI 自由對話回覆(帶入使用者目前的待辦事項作為 context)。
 
 ## 技術棧
 
 - 後端框架:C# + ASP.NET Core Web API(.NET 8),含 `BackgroundService` 做定時排程
 - 資料庫:PostgreSQL(原本用 SQL Server Express,因應部署到 Render 改為 PostgreSQL)
 - ORM:Entity Framework Core + Npgsql,**Database First**(`dotnet ef dbcontext scaffold`)
-- AI:Gemini API(`generateContent`,function calling + `google_search` grounding 同時提供,Gemini 3 系列模型支援兩者混用),用於新增任務判斷與一般對話回覆
+- AI:[Groq API](https://console.groq.com/)(`/openai/v1/chat/completions`,OpenAI 相容格式,免費額度以「每分鐘請求數」計算,比按日計算的額度對個人使用更寬裕),用於新增任務判斷與一般對話回覆。原本用 Gemini API,因免費配額用盡且新舊 key 共用同一專案配額而換過來;換過來後**沒有內建搜尋工具**,問天氣/匯率這類需要即時資訊的問題目前答不出來,是已知的功能縮減
 - LINE 串接:直接以 `HttpClient` 呼叫 LINE Messaging API,webhook 簽章以 HMAC-SHA256 驗證(未使用官方 SDK)
 
 ## 訊息格式
@@ -19,13 +19,13 @@
 提醒我開會          → Bot 會反問「請問是什麼時候?」
 ```
 
-Gemini 判斷使用者意圖後,行為分三種:
+AI 判斷使用者意圖後,行為分三種:
 
 1. **資訊完整** → 回覆確認問句(「要幫你新增:『倒垃圾』,到期時間 8/20 18:00,確定嗎?」),使用者回「確定」才會真的寫入 `TASKS`,回「取消」則不寫入。純問答式聊天完全不會留下任何暫存狀態。
 2. **資訊不足**(例如沒講時間)→ 反問,並記住對話上下文(10 分鐘內有效),下一句話會自動跟前面的內容合併判斷。
 3. **不是新增意圖**(單純聊天、詢問待辦清單等)→ 直接文字回覆,不留記憶。
 
-還是支援舊的**固定格式快速路徑**,做為 Gemini API 打不通時的備援:
+還是支援舊的**固定格式快速路徑**,做為 AI API 打不通時的備援:
 
 ```
 新增 {事項} {M/d} {HH:mm}
@@ -45,7 +45,7 @@ Gemini 判斷使用者意圖後,行為分三種:
         │
    ┌────┴────┐
    ▼是        ▼否(或沒有等待確認的提議)
-直接處理    呼叫 Gemini
+直接處理    呼叫 AI(Groq)
 (零延遲)   (帶 create_task / ask_clarification / confirm_task / cancel_task 四個工具)
    │             │
    │      ┌──────┼──────┬──────────┐
@@ -60,11 +60,11 @@ Gemini 判斷使用者意圖後,行為分三種:
                     ▼
           回覆使用者(LINE Reply API)
 
-  ※ Gemini API 失敗時:先試固定格式(新增 事項 M/d HH:mm)搶救,
+  ※ AI API 失敗時:先試固定格式(新增 事項 M/d HH:mm)搶救,
     還是不行則回覆「前往 ChatGPT」的連結按鈕
 ```
 
-> 「確定/取消」精確字眼命中時直接本地處理,不等 Gemini;其他說法(「可以」「先不要好了」等)一樣能正確送出 `confirm_task`/`cancel_task`,只是要多等一次 API 呼叫。
+> 「確定/取消」精確字眼命中時直接本地處理,不等 AI;其他說法(「可以」「先不要好了」等)一樣能正確送出 `confirm_task`/`cancel_task`,只是要多等一次 API 呼叫。
 
 **到期提醒推播流程**
 
@@ -133,7 +133,8 @@ Gemini 判斷使用者意圖後,行為分三種:
 - [x] 資料庫由 SQL Server 遷移到 PostgreSQL(為了部署到 Render——Render 不提供代管 SQL Server)
 - [x] ⑦ Render 部署準備(Dockerfile、render.yaml Blueprint、程式碼配合 PORT/連線字串環境變數)
 - [x] Render 實際上線(修過 ASP.NET Core 在容器裡因 inotify 資源不足導致 `CreateBuilder()` 崩潰的問題,見下方部署章節)
-- [x] Gemini 加 `google_search` grounding 工具,與既有 4 個 function calling 工具同時提供(Gemini 3 系列支援混用,不需要分兩次呼叫)——程式碼已完成,今日 API 免費額度用完,待下次額度重置後端到端測試
+- [x] ~~Gemini 加 `google_search` grounding 工具~~ —— 已實作但後來整個棄用(見下一項)
+- [x] AI 供應商從 Gemini 換成 [Groq](https://console.groq.com/)(OpenAI 相容格式):Gemini 免費配額用盡,且同專案新申請的 key 共用同一配額池、換 key 沒用;Groq 免費層以「每分鐘請求數」計算,對個人使用更寬裕。**代價是搜尋 grounding 功能一併拿掉**(Groq 沒有內建搜尋工具),問天氣/匯率之類需要即時資訊的問題暫時答不出來
 
 ### 待決定事項
 
@@ -163,7 +164,7 @@ dotnet user-secrets init
 dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Port=5432;Database=LinebotJam;Username=postgres;Password=<你的密碼>"
 dotnet user-secrets set "Line:ChannelSecret" "<LINE Developers Console → Basic settings>"
 dotnet user-secrets set "Line:ChannelAccessToken" "<LINE Developers Console → Messaging API → Issue>"
-dotnet user-secrets set "Gemini:ApiKey" "<Google AI Studio → Create API key>"
+dotnet user-secrets set "Groq:ApiKey" "<console.groq.com → API Keys → Create API Key>"
 ```
 
 ### 執行
@@ -192,7 +193,7 @@ ngrok http 5240
 2. 部署前,Render 會要求填幾個標記 `sync: false` 的環境變數(密鑰不寫在 `render.yaml` 裡):
    - `Line__ChannelSecret`
    - `Line__ChannelAccessToken`
-   - `Gemini__ApiKey`
+   - `Groq__ApiKey`
 3. 資料庫連線資訊(host/port/user/password)已經在 `render.yaml` 裡設定成自動從 `linebot-jam-db` 帶入,不用手動填
 4. **第一次部署後,資料庫是空的**,需要手動連上去跑一次 `CreateTable.sql` 建表:到 Render 的 `linebot-jam-db` 頁面複製「External Connection String」,在本機執行:
    ```bash
@@ -212,6 +213,6 @@ ngrok http 5240
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | Render 專用,`render.yaml` 已設定成自動從 `linebot-jam-db` 帶入,不用手動填 |
 | `Line:ChannelSecret` | LINE Webhook 簽章驗證用 |
 | `Line:ChannelAccessToken` | LINE Messaging API 呼叫用 |
-| `Gemini:ApiKey` | Gemini API 金鑰 |
-| `Gemini:Model` | 使用的 Gemini 模型(預設 `gemini-3.7-flash`;若遇到官方回報的暫時性過載 503,可先切換成 `gemini-3.6-flash` 等其他型號) |
+| `Groq:ApiKey` | Groq API 金鑰,只放 User Secrets/Render 環境變數,不進版控 |
+| `Groq:Model` | 使用的 Groq 模型(預設 `llama-3.3-70b-versatile`,支援 function calling) |
 | `Reminder:IntervalMinutes` | 提醒排程掃描間隔,預設 60 分鐘 |

@@ -18,7 +18,7 @@ public class LineWebhookController : ControllerBase
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    // 快速路徑:命中就不用等 Gemini,大部分使用者會照著我們的提示回這兩個字
+    // 快速路徑:命中就不用等 AI,大部分使用者會照著我們的提示回這兩個字
     private static readonly HashSet<string> ConfirmWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "確定", "對", "好", "好的", "是", "yes", "ok", "嗯", "沒錯", "確認"
@@ -31,20 +31,20 @@ public class LineWebhookController : ControllerBase
 
     private readonly ILineSignatureValidator _signatureValidator;
     private readonly ILineMessagingClient _messagingClient;
-    private readonly IGeminiClient _geminiClient;
+    private readonly IAiClient _aiClient;
     private readonly AppDbContext _db;
     private readonly ILogger<LineWebhookController> _logger;
 
     public LineWebhookController(
         ILineSignatureValidator signatureValidator,
         ILineMessagingClient messagingClient,
-        IGeminiClient geminiClient,
+        IAiClient aiClient,
         AppDbContext db,
         ILogger<LineWebhookController> logger)
     {
         _signatureValidator = signatureValidator;
         _messagingClient = messagingClient;
-        _geminiClient = geminiClient;
+        _aiClient = aiClient;
         _db = db;
         _logger = logger;
     }
@@ -128,8 +128,8 @@ public class LineWebhookController : ControllerBase
                 return;
             }
 
-            // 不是清單裡的精確字眼,交給 Gemini 判斷(它會知道目前有等待確認的提議)
-            await ProcessWithGeminiAsync(user, replyToken, text, text);
+            // 不是清單裡的精確字眼,交給 AI 判斷(它會知道目前有等待確認的提議)
+            await ProcessWithAiAsync(user, replyToken, text, text);
             return;
         }
 
@@ -138,17 +138,17 @@ public class LineWebhookController : ControllerBase
             ? user.PendingRawInput + "\n使用者: " + text
             : text;
 
-        await ProcessWithGeminiAsync(user, replyToken, combinedInput, text);
+        await ProcessWithAiAsync(user, replyToken, combinedInput, text);
     }
 
-    private async Task ProcessWithGeminiAsync(User user, string replyToken, string combinedInput, string rawText)
+    private async Task ProcessWithAiAsync(User user, string replyToken, string combinedInput, string rawText)
     {
-        var systemInstruction = await BuildGeminiSystemInstructionAsync(user);
-        var result = await _geminiClient.GenerateAsync(combinedInput, systemInstruction);
+        var systemInstruction = await BuildSystemInstructionAsync(user);
+        var result = await _aiClient.GenerateAsync(combinedInput, systemInstruction);
 
         if (!result.Success)
         {
-            // Gemini 打不通 → 先試舊的固定格式救一次,救不回來才導去 ChatGPT
+            // AI 打不通 → 先試舊的固定格式救一次,救不回來才導去 ChatGPT
             if (TaskMessageParser.TryParse(rawText, DateTime.Now, out var fbContent, out var fbDueAt))
             {
                 user.PendingContent = fbContent;
@@ -268,7 +268,7 @@ public class LineWebhookController : ControllerBase
         user.PendingUpdatedAt = null;
     }
 
-    private async Task<string> BuildGeminiSystemInstructionAsync(User user)
+    private async Task<string> BuildSystemInstructionAsync(User user)
     {
         var sb = new StringBuilder();
         sb.AppendLine("你是一個 LINE 任務提醒機器人的助理,請用繁體中文回覆使用者,語氣自然、簡短。");
@@ -304,8 +304,6 @@ public class LineWebhookController : ControllerBase
         }
 
         sb.AppendLine("如果使用者只是聊天或詢問既有待辦事項,不要呼叫任何函式,直接文字回覆。");
-        sb.AppendLine("使用者自己的待辦清單已經在上面提供,不需要為了任務相關問題使用搜尋工具。");
-        sb.AppendLine("只有使用者問到需要即時或外部資訊的問題(例如天氣、匯率、新聞、路況)時,才使用 google_search 工具查詢後再回答。");
         return sb.ToString();
     }
 }
