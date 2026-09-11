@@ -13,9 +13,7 @@ public partial class User
 
     public DateTime CreatedAt { get; set; }
 
-    public string? PendingContent { get; set; }
-
-    public DateTime? PendingDueAt { get; set; }
+    public string? PendingTasksJson { get; set; }
 
     public string? PendingRawInput { get; set; }
 

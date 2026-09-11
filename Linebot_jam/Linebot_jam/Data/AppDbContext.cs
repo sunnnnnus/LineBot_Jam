@@ -96,8 +96,6 @@ public partial class AppDbContext : DbContext
                 .HasColumnType("timestamp without time zone");
             entity.Property(e => e.DisplayName).HasMaxLength(100);
             entity.Property(e => e.LineUserId).HasMaxLength(50);
-            entity.Property(e => e.PendingContent).HasMaxLength(200);
-            entity.Property(e => e.PendingDueAt).HasColumnType("timestamp without time zone");
             entity.Property(e => e.PendingRawInput).HasMaxLength(1000);
             entity.Property(e => e.PendingUpdatedAt).HasColumnType("timestamp without time zone");
         });

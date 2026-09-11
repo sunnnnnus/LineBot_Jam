@@ -4,8 +4,8 @@ CREATE TABLE "USERS" (
     "DisplayName"       VARCHAR(100)  NULL,
     "CreatedAt"         TIMESTAMP     NOT NULL DEFAULT NOW(),
     -- 以下為 AI 對話式新增任務的暫存狀態(等待使用者確認/補充資訊用,不代表正式資料)
-    "PendingContent"    VARCHAR(200)  NULL,
-    "PendingDueAt"      TIMESTAMP     NULL,
+    -- PendingTasksJson 存待確認的提議陣列 [{"Content":"...","DueAt":"..."}]，一次可以有多筆
+    "PendingTasksJson"  TEXT          NULL,
     "PendingRawInput"   VARCHAR(1000) NULL,
     "PendingUpdatedAt"  TIMESTAMP     NULL
 );

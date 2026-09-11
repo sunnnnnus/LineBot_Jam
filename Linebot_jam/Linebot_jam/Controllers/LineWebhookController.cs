@@ -110,7 +110,7 @@ public class LineWebhookController : ControllerBase
 
         var now = DateTime.Now;
         var pendingActive = user.PendingUpdatedAt.HasValue && now - user.PendingUpdatedAt.Value < TimeSpan.FromMinutes(10);
-        var awaitingConfirm = pendingActive && user.PendingContent is not null && user.PendingDueAt is not null;
+        var awaitingConfirm = pendingActive && !string.IsNullOrEmpty(user.PendingTasksJson);
 
         if (awaitingConfirm)
         {
@@ -118,7 +118,7 @@ public class LineWebhookController : ControllerBase
 
             if (ConfirmWords.Contains(trimmed))
             {
-                await ConfirmPendingTaskAsync(user, replyToken);
+                await ConfirmPendingTasksAsync(user, replyToken);
                 return;
             }
 
@@ -151,9 +151,8 @@ public class LineWebhookController : ControllerBase
             // AI 打不通 → 先試舊的固定格式救一次,救不回來才導去 ChatGPT
             if (TaskMessageParser.TryParse(rawText, DateTime.Now, out var fbContent, out var fbDueAt))
             {
-                user.PendingContent = fbContent;
-                user.PendingDueAt = fbDueAt;
-                await ConfirmPendingTaskAsync(user, replyToken);
+                SetPendingTasks(user, new List<PendingTask> { new(fbContent, fbDueAt) });
+                await ConfirmPendingTasksAsync(user, replyToken);
                 return;
             }
 
@@ -167,59 +166,57 @@ public class LineWebhookController : ControllerBase
             return;
         }
 
-        if (result.FunctionName == "confirm_task")
+        var calls = result.FunctionCalls;
+
+        if (calls.Any(c => c.Name == "confirm_task"))
         {
-            await ConfirmPendingTaskAsync(user, replyToken);
+            await ConfirmPendingTasksAsync(user, replyToken);
             return;
         }
 
-        if (result.FunctionName == "cancel_task")
+        if (calls.Any(c => c.Name == "cancel_task"))
         {
             await CancelPendingAsync(user, replyToken, "好的,已取消。");
             return;
         }
 
-        if (result.FunctionName == "create_task" && result.FunctionArgs is JsonElement createArgs)
+        // 一則訊息可能同時列了好幾件待辦,逐一收集
+        var proposals = new List<PendingTask>();
+        foreach (var call in calls.Where(c => c.Name == "create_task"))
         {
-            var hasContent = createArgs.TryGetProperty("content", out var contentEl);
-            var hasDueAt = createArgs.TryGetProperty("due_at", out var dueAtEl);
+            if (TryReadProposal(call, out var proposal))
+                proposals.Add(proposal);
+        }
 
-            if (hasContent && hasDueAt
-                && dueAtEl.GetString() is string dueAtStr
-                && DateTime.TryParse(dueAtStr, out var parsedDueAt)
-                && parsedDueAt > DateTime.Now)
-            {
-                var proposedContent = contentEl.GetString() ?? string.Empty;
-                if (proposedContent.Length > 200)
-                    proposedContent = proposedContent[..200];
-
-                user.PendingContent = proposedContent;
-                user.PendingDueAt = parsedDueAt;
-                user.PendingRawInput = null;
-                user.PendingUpdatedAt = DateTime.Now;
-                await _db.SaveChangesAsync();
-
-                await _messagingClient.ReplyMessageAsync(replyToken,
-                    $"要幫你新增:「{proposedContent}」\n到期時間:{parsedDueAt:yyyy/MM/dd HH:mm}\n確定嗎?(回覆「確定」或「取消」)");
-                return;
-            }
-
-            ClearPending(user);
+        if (proposals.Count > 0)
+        {
+            SetPendingTasks(user, proposals);
+            user.PendingRawInput = null;
             await _db.SaveChangesAsync();
-            await _messagingClient.ReplyMessageAsync(replyToken, "抱歉,我沒有聽懂明確的時間,可以再說一次嗎?");
+
+            await _messagingClient.ReplyMessageAsync(replyToken, BuildConfirmPrompt(proposals));
             return;
         }
 
-        if (result.FunctionName == "ask_clarification" && result.FunctionArgs is JsonElement clarifyArgs
+        var clarification = calls.FirstOrDefault(c => c.Name == "ask_clarification");
+        if (clarification?.Args is JsonElement clarifyArgs
             && clarifyArgs.TryGetProperty("question", out var questionEl))
         {
-            user.PendingContent = null;
-            user.PendingDueAt = null;
+            user.PendingTasksJson = null;
             user.PendingRawInput = combinedInput.Length > 1000 ? combinedInput[..1000] : combinedInput;
             user.PendingUpdatedAt = DateTime.Now;
             await _db.SaveChangesAsync();
 
             await _messagingClient.ReplyMessageAsync(replyToken, questionEl.GetString() ?? "可以再多說一點嗎?");
+            return;
+        }
+
+        // AI 說要新增但參數不完整(例如時間解析不出來)
+        if (calls.Any(c => c.Name == "create_task"))
+        {
+            ClearPending(user);
+            await _db.SaveChangesAsync();
+            await _messagingClient.ReplyMessageAsync(replyToken, "抱歉,我沒有聽懂明確的時間,可以再說一次嗎?");
             return;
         }
 
@@ -229,28 +226,108 @@ public class LineWebhookController : ControllerBase
         await _messagingClient.ReplyMessageAsync(replyToken, result.Text ?? "嗯嗯。");
     }
 
-    private async Task ConfirmPendingTaskAsync(User user, string replyToken)
+    private static bool TryReadProposal(AiFunctionCall call, out PendingTask proposal)
     {
-        if (user.PendingContent is null || user.PendingDueAt is null)
+        proposal = default!;
+
+        if (call.Args is not JsonElement args)
+            return false;
+
+        if (!args.TryGetProperty("content", out var contentEl) || !args.TryGetProperty("due_at", out var dueAtEl))
+            return false;
+
+        if (dueAtEl.GetString() is not string dueAtStr
+            || !DateTime.TryParse(dueAtStr, out var dueAt)
+            || dueAt <= DateTime.Now)
+        {
+            return false;
+        }
+
+        var content = contentEl.GetString() ?? string.Empty;
+        if (content.Length == 0)
+            return false;
+        if (content.Length > 200)
+            content = content[..200];
+
+        proposal = new PendingTask(content, dueAt);
+        return true;
+    }
+
+    private static string BuildConfirmPrompt(IReadOnlyList<PendingTask> proposals)
+    {
+        if (proposals.Count == 1)
+        {
+            var only = proposals[0];
+            return $"要幫你新增:「{only.Content}」\n到期時間:{only.DueAt:yyyy/MM/dd HH:mm}\n確定嗎?(回覆「確定」或「取消」)";
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"要幫你新增 {proposals.Count} 筆:");
+        for (var i = 0; i < proposals.Count; i++)
+            sb.AppendLine($"{i + 1}. {proposals[i].Content}({proposals[i].DueAt:yyyy/MM/dd HH:mm})");
+        sb.Append("確定嗎?(回覆「確定」或「取消」)");
+        return sb.ToString();
+    }
+
+    private static void SetPendingTasks(User user, IReadOnlyList<PendingTask> proposals)
+    {
+        user.PendingTasksJson = JsonSerializer.Serialize(proposals);
+        user.PendingUpdatedAt = DateTime.Now;
+    }
+
+    private static List<PendingTask> ReadPendingTasks(User user)
+    {
+        if (string.IsNullOrEmpty(user.PendingTasksJson))
+            return new List<PendingTask>();
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<PendingTask>>(user.PendingTasksJson) ?? new List<PendingTask>();
+        }
+        catch (JsonException)
+        {
+            return new List<PendingTask>();
+        }
+    }
+
+    private async Task ConfirmPendingTasksAsync(User user, string replyToken)
+    {
+        var proposals = ReadPendingTasks(user);
+
+        if (proposals.Count == 0)
         {
             await _messagingClient.ReplyMessageAsync(replyToken, "目前沒有等待確認的任務喔。");
             return;
         }
 
-        var task = new TaskItem
+        foreach (var proposal in proposals)
         {
-            User = user,
-            Content = user.PendingContent,
-            DueAt = user.PendingDueAt.Value,
-            Status = "pending",
-            PriorityScore = TaskPriorityCalculator.ComputePriorityScore(user.PendingDueAt.Value)
-        };
-        _db.Tasks.Add(task);
+            _db.Tasks.Add(new TaskItem
+            {
+                User = user,
+                Content = proposal.Content,
+                DueAt = proposal.DueAt,
+                Status = "pending",
+                PriorityScore = TaskPriorityCalculator.ComputePriorityScore(proposal.DueAt)
+            });
+        }
+
         ClearPending(user);
         await _db.SaveChangesAsync();
 
-        await _messagingClient.ReplyMessageAsync(replyToken,
-            $"已新增:{task.Content}\n到期時間:{task.DueAt:yyyy/MM/dd HH:mm}");
+        var sb = new StringBuilder();
+        if (proposals.Count == 1)
+        {
+            sb.Append($"已新增:{proposals[0].Content}\n到期時間:{proposals[0].DueAt:yyyy/MM/dd HH:mm}");
+        }
+        else
+        {
+            sb.AppendLine($"已新增 {proposals.Count} 筆:");
+            for (var i = 0; i < proposals.Count; i++)
+                sb.AppendLine($"{i + 1}. {proposals[i].Content}({proposals[i].DueAt:yyyy/MM/dd HH:mm})");
+        }
+
+        await _messagingClient.ReplyMessageAsync(replyToken, sb.ToString().TrimEnd());
     }
 
     private async Task CancelPendingAsync(User user, string replyToken, string message)
@@ -262,8 +339,7 @@ public class LineWebhookController : ControllerBase
 
     private static void ClearPending(User user)
     {
-        user.PendingContent = null;
-        user.PendingDueAt = null;
+        user.PendingTasksJson = null;
         user.PendingRawInput = null;
         user.PendingUpdatedAt = null;
     }
@@ -291,15 +367,21 @@ public class LineWebhookController : ControllerBase
             sb.AppendLine("使用者目前沒有待辦事項。");
         }
 
-        if (user.PendingContent is not null && user.PendingDueAt is not null)
+        var pending = ReadPendingTasks(user);
+        if (pending.Count > 0)
         {
-            sb.AppendLine($"目前有一個等待使用者確認的新待辦提議:「{user.PendingContent}」,到期時間 {user.PendingDueAt:yyyy-MM-dd HH:mm}。");
+            sb.AppendLine("目前有以下等待使用者確認的新待辦提議:");
+            foreach (var p in pending)
+                sb.AppendLine($"- {p.Content}(到期: {p.DueAt:yyyy-MM-dd HH:mm})");
             sb.AppendLine("如果使用者的回覆表示同意/確定,呼叫 confirm_task;表示不要/取消,呼叫 cancel_task;" +
                           "如果使用者提供了不同或更完整的內容與時間,呼叫 create_task 以新內容取代提議;如果還不清楚,才用文字回覆詢問。");
         }
         else
         {
             sb.AppendLine("如果使用者的訊息包含明確的待辦事項與到期時間,呼叫 create_task。");
+            sb.AppendLine("**如果使用者一則訊息裡列了多件待辦事項(例如 1. 2. 3. 條列,或用頓號、換行分隔)," +
+                          "請為每一件各呼叫一次 create_task,不要只取第一件、也不要把多件合併成一筆。**");
+            sb.AppendLine("如果多件待辦共用同一個時間(例如開頭只寫了一次「9/14 11點」),就把那個時間套用到每一筆。");
             sb.AppendLine("如果使用者看起來想新增待辦但缺少必要資訊(例如沒說時間),呼叫 ask_clarification 提出簡短的追問。");
         }
 

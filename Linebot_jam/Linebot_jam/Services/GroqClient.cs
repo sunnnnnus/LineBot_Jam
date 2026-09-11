@@ -145,18 +145,25 @@ public class GroqClient : IAiClient
                     && toolCalls.ValueKind == JsonValueKind.Array
                     && toolCalls.GetArrayLength() > 0)
                 {
-                    var firstCall = toolCalls[0].GetProperty("function");
-                    var name = firstCall.GetProperty("name").GetString();
-                    var argsJson = firstCall.GetProperty("arguments").GetString();
+                    var calls = new List<AiFunctionCall>();
 
-                    JsonElement? args = null;
-                    if (!string.IsNullOrEmpty(argsJson))
+                    foreach (var toolCall in toolCalls.EnumerateArray())
                     {
-                        using var argsDoc = JsonDocument.Parse(argsJson);
-                        args = argsDoc.RootElement.Clone();
+                        var function = toolCall.GetProperty("function");
+                        var name = function.GetProperty("name").GetString() ?? string.Empty;
+                        var argsJson = function.GetProperty("arguments").GetString();
+
+                        JsonElement? args = null;
+                        if (!string.IsNullOrEmpty(argsJson))
+                        {
+                            using var argsDoc = JsonDocument.Parse(argsJson);
+                            args = argsDoc.RootElement.Clone();
+                        }
+
+                        calls.Add(new AiFunctionCall { Name = name, Args = args });
                     }
 
-                    return new AiResult { Success = true, FunctionName = name, FunctionArgs = args };
+                    return new AiResult { Success = true, FunctionCalls = calls };
                 }
 
                 var text = message.TryGetProperty("content", out var contentEl) ? contentEl.GetString() : null;
