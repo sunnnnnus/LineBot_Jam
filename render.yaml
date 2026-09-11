@@ -42,6 +42,6 @@ services:
       - key: Groq__ApiKey
         sync: false
       - key: Groq__Model
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
       - key: Reminder__IntervalMinutes
         value: "60"

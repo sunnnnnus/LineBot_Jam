@@ -214,5 +214,5 @@ ngrok http 5240
 | `Line:ChannelSecret` | LINE Webhook 簽章驗證用 |
 | `Line:ChannelAccessToken` | LINE Messaging API 呼叫用 |
 | `Groq:ApiKey` | Groq API 金鑰,只放 User Secrets/Render 環境變數,不進版控 |
-| `Groq:Model` | 使用的 Groq 模型(預設 `llama-3.3-70b-versatile`,支援 function calling) |
+| `Groq:Model` | 使用的 Groq 模型(預設 `openai/gpt-oss-120b`,支援 function calling)。注意 `llama-3.3-70b-versatile` 雖然還列在文件上,但實測免費層沒有存取權限(會回 `model_not_found`),換模型前建議先用 `/openai/v1/models` 確認帳號實際可用清單 |
 | `Reminder:IntervalMinutes` | 提醒排程掃描間隔,預設 60 分鐘 |
