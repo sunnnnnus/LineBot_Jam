@@ -23,9 +23,16 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<User> Users { get; set; }
 
     // Fallback used only by design-time tooling (e.g. `dotnet ef migrations`) when no DI-provided
-    // options are available. Runtime configuration always comes from Program.cs + user-secrets.
+    // options are available. The IsConfigured check is essential: without it, this unconditionally
+    // overrides the real connection string that Program.cs builds from Render's env vars, silently
+    // forcing every environment back onto localhost.
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-        => optionsBuilder.UseNpgsql("Host=localhost;Port=5432;Database=LinebotJam;Username=postgres;Password=CHANGE_ME");
+    {
+        if (!optionsBuilder.IsConfigured)
+        {
+            optionsBuilder.UseNpgsql("Host=localhost;Port=5432;Database=LinebotJam;Username=postgres;Password=CHANGE_ME");
+        }
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
