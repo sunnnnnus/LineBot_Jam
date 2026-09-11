@@ -45,7 +45,12 @@ public class PostgresRecoveryTests
         _services = services.BuildServiceProvider();
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.ExecuteSqlRawAsync(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "CreateTable.sql")));
+        // This is a script, not an EF format string (SQL comments contain JSON braces).
+        await using var setupConnection = new NpgsqlConnection(scopedConnection);
+        await setupConnection.OpenAsync();
+        await using var setup = new NpgsqlCommand(
+            await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "CreateTable.sql")), setupConnection);
+        await setup.ExecuteNonQueryAsync();
         using var stream = typeof(AppDbContext).Assembly.GetManifestResourceStream("Linebot_jam.Data.WebhookQueue.sql")!;
         using var reader = new StreamReader(stream);
         var sql = await reader.ReadToEndAsync();
