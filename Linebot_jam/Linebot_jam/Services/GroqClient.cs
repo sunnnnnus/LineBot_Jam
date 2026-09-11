@@ -14,17 +14,32 @@ public class GroqClient : IAiClient
             type = "function",
             function = new
             {
-                name = "create_task",
-                description = "當使用者的訊息包含足夠資訊(要做的事、以及明確的到期日期時間)可以新增一筆待辦提醒時呼叫此函式。",
+                name = "create_tasks",
+                description = "當使用者的訊息包含足夠資訊(要做的事、以及明確的到期日期時間)可以新增待辦提醒時呼叫此函式。" +
+                              "使用者一則訊息裡可能列了多件待辦(例如 1. 2. 3. 條列、頓號或換行分隔)," +
+                              "請把每一件都放進 tasks 陣列裡一次傳回,不要只取第一件、也不要把多件合併成一筆。",
                 parameters = new
                 {
                     type = "object",
                     properties = new
                     {
-                        content = new { type = "string", description = "待辦事項的簡短內容" },
-                        due_at = new { type = "string", description = "到期時間,ISO 8601 格式,例如 2026-08-20T18:00:00" }
+                        tasks = new
+                        {
+                            type = "array",
+                            description = "要新增的待辦事項清單,一件一個元素",
+                            items = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    content = new { type = "string", description = "待辦事項的簡短內容" },
+                                    due_at = new { type = "string", description = "到期時間,ISO 8601 格式,例如 2026-08-20T18:00:00" }
+                                },
+                                required = new[] { "content", "due_at" }
+                            }
+                        }
                     },
-                    required = new[] { "content", "due_at" }
+                    required = new[] { "tasks" }
                 }
             }
         },
@@ -161,6 +176,9 @@ public class GroqClient : IAiClient
                         }
 
                         calls.Add(new AiFunctionCall { Name = name, Args = args });
+
+                        // 排查用:模型實際回了什麼工具、參數長什麼樣(多筆待辦是否都有進 tasks 陣列)
+                        _logger.LogInformation("Groq tool call: {Name} {Arguments}", name, argsJson);
                     }
 
                     return new AiResult { Success = true, FunctionCalls = calls };

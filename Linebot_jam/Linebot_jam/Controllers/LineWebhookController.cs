@@ -180,13 +180,11 @@ public class LineWebhookController : ControllerBase
             return;
         }
 
-        // 一則訊息可能同時列了好幾件待辦,逐一收集
-        var proposals = new List<PendingTask>();
-        foreach (var call in calls.Where(c => c.Name == "create_task"))
-        {
-            if (TryReadProposal(call, out var proposal))
-                proposals.Add(proposal);
-        }
+        // 一則訊息可能同時列了好幾件待辦,全部都在 create_tasks 的 tasks 陣列裡
+        var proposals = calls
+            .Where(c => c.Name == "create_tasks")
+            .SelectMany(ReadProposals)
+            .ToList();
 
         if (proposals.Count > 0)
         {
@@ -212,7 +210,7 @@ public class LineWebhookController : ControllerBase
         }
 
         // AI 說要新增但參數不完整(例如時間解析不出來)
-        if (calls.Any(c => c.Name == "create_task"))
+        if (calls.Any(c => c.Name == "create_tasks"))
         {
             ClearPending(user);
             await _db.SaveChangesAsync();
@@ -226,31 +224,38 @@ public class LineWebhookController : ControllerBase
         await _messagingClient.ReplyMessageAsync(replyToken, result.Text ?? "嗯嗯。");
     }
 
-    private static bool TryReadProposal(AiFunctionCall call, out PendingTask proposal)
+    private static IEnumerable<PendingTask> ReadProposals(AiFunctionCall call)
     {
-        proposal = default!;
-
-        if (call.Args is not JsonElement args)
-            return false;
-
-        if (!args.TryGetProperty("content", out var contentEl) || !args.TryGetProperty("due_at", out var dueAtEl))
-            return false;
-
-        if (dueAtEl.GetString() is not string dueAtStr
-            || !DateTime.TryParse(dueAtStr, out var dueAt)
-            || dueAt <= DateTime.Now)
+        if (call.Args is not JsonElement args
+            || !args.TryGetProperty("tasks", out var tasksEl)
+            || tasksEl.ValueKind != JsonValueKind.Array)
         {
-            return false;
+            yield break;
         }
 
-        var content = contentEl.GetString() ?? string.Empty;
-        if (content.Length == 0)
-            return false;
-        if (content.Length > 200)
-            content = content[..200];
+        foreach (var item in tasksEl.EnumerateArray())
+        {
+            if (!item.TryGetProperty("content", out var contentEl)
+                || !item.TryGetProperty("due_at", out var dueAtEl))
+            {
+                continue;
+            }
 
-        proposal = new PendingTask(content, dueAt);
-        return true;
+            if (dueAtEl.GetString() is not string dueAtStr
+                || !DateTime.TryParse(dueAtStr, out var dueAt)
+                || dueAt <= DateTime.Now)
+            {
+                continue;
+            }
+
+            var content = contentEl.GetString() ?? string.Empty;
+            if (content.Length == 0)
+                continue;
+            if (content.Length > 200)
+                content = content[..200];
+
+            yield return new PendingTask(content, dueAt);
+        }
     }
 
     private static string BuildConfirmPrompt(IReadOnlyList<PendingTask> proposals)
@@ -374,13 +379,13 @@ public class LineWebhookController : ControllerBase
             foreach (var p in pending)
                 sb.AppendLine($"- {p.Content}(到期: {p.DueAt:yyyy-MM-dd HH:mm})");
             sb.AppendLine("如果使用者的回覆表示同意/確定,呼叫 confirm_task;表示不要/取消,呼叫 cancel_task;" +
-                          "如果使用者提供了不同或更完整的內容與時間,呼叫 create_task 以新內容取代提議;如果還不清楚,才用文字回覆詢問。");
+                          "如果使用者提供了不同或更完整的內容與時間,呼叫 create_tasks 以新內容取代提議;如果還不清楚,才用文字回覆詢問。");
         }
         else
         {
-            sb.AppendLine("如果使用者的訊息包含明確的待辦事項與到期時間,呼叫 create_task。");
+            sb.AppendLine("如果使用者的訊息包含明確的待辦事項與到期時間,呼叫 create_tasks。");
             sb.AppendLine("**如果使用者一則訊息裡列了多件待辦事項(例如 1. 2. 3. 條列,或用頓號、換行分隔)," +
-                          "請為每一件各呼叫一次 create_task,不要只取第一件、也不要把多件合併成一筆。**");
+                          "請把每一件都放進 tasks 陣列一次傳回,不要只取第一件、也不要把多件合併成一筆。**");
             sb.AppendLine("如果多件待辦共用同一個時間(例如開頭只寫了一次「9/14 11點」),就把那個時間套用到每一筆。");
             sb.AppendLine("如果使用者看起來想新增待辦但缺少必要資訊(例如沒說時間),呼叫 ask_clarification 提出簡短的追問。");
         }
