@@ -22,6 +22,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<User> Users { get; set; }
 
+    public DbSet<WebhookJob> WebhookJobs { get; set; }
+
     // Fallback used only by design-time tooling (e.g. `dotnet ef migrations`) when no DI-provided
     // options are available. The IsConfigured check is essential: without it, this unconditionally
     // overrides the real connection string that Program.cs builds from Render's env vars, silently
@@ -36,6 +38,13 @@ public partial class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<WebhookJob>(entity =>
+        {
+            entity.ToTable("WEBHOOK_JOBS");
+            entity.HasKey(e => e.EventId);
+            entity.Property(e => e.Sequence).UseIdentityAlwaysColumn();
+        });
+
         modelBuilder.Entity<ReminderLog>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("REMINDER_LOGS_pkey");

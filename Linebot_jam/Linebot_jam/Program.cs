@@ -29,6 +29,10 @@ if (string.IsNullOrEmpty(connectionString))
 }
 
 builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+builder.Services.AddScoped<IWebhookQueue, WebhookQueue>();
+builder.Services.AddScoped<PendingLineReply>();
+builder.Services.AddScoped<LineEventProcessor>();
+builder.Services.AddHostedService<WebhookBackgroundService>();
 
 builder.Services.Configure<LineOptions>(builder.Configuration.GetSection("Line"));
 builder.Services.AddSingleton<ILineSignatureValidator, LineSignatureValidator>();
@@ -36,6 +40,16 @@ builder.Services.AddHttpClient<ILineMessagingClient, LineMessagingClient>((sp, c
 {
     var lineOptions = sp.GetRequiredService<IOptions<LineOptions>>().Value;
     client.BaseAddress = new Uri("https://api.line.me/");
+    client.Timeout = TimeSpan.FromSeconds(10);
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Bearer", lineOptions.ChannelAccessToken);
+});
+
+builder.Services.AddHttpClient<WebhookDeliveryClient>((sp, client) =>
+{
+    var lineOptions = sp.GetRequiredService<IOptions<LineOptions>>().Value;
+    client.BaseAddress = new Uri("https://api.line.me/");
+    client.Timeout = TimeSpan.FromSeconds(10);
     client.DefaultRequestHeaders.Authorization =
         new AuthenticationHeaderValue("Bearer", lineOptions.ChannelAccessToken);
 });
@@ -44,6 +58,7 @@ builder.Services.Configure<GroqOptions>(builder.Configuration.GetSection("Groq")
 builder.Services.AddHttpClient<IAiClient, GroqClient>(client =>
 {
     client.BaseAddress = new Uri("https://api.groq.com/");
+    client.Timeout = TimeSpan.FromSeconds(20);
 });
 
 builder.Services.AddHostedService<ReminderBackgroundService>();

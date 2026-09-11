@@ -69,7 +69,7 @@ AI 判斷使用者意圖後,行為分三種:
 **到期提醒推播流程**
 
 ```
-排程器(BackgroundService,每小時執行)
+排程器(BackgroundService,每分鐘執行)
         │
         ▼
 查詢到期任務(依優先順序排序,比對 REMINDER_LOGS 避免重複通知)
@@ -215,4 +215,36 @@ ngrok http 5240
 | `Line:ChannelAccessToken` | LINE Messaging API 呼叫用 |
 | `Groq:ApiKey` | Groq API 金鑰,只放 User Secrets/Render 環境變數,不進版控 |
 | `Groq:Model` | 使用的 Groq 模型(預設 `openai/gpt-oss-120b`,支援 function calling)。注意 `llama-3.3-70b-versatile` 雖然還列在文件上,但實測免費層沒有存取權限(會回 `model_not_found`),換模型前建議先用 `/openai/v1/models` 確認帳號實際可用清單 |
-| `Reminder:IntervalMinutes` | 提醒排程掃描間隔,預設 60 分鐘 |
+| `Reminder:IntervalMinutes` | 提醒排程掃描間隔,預設 1 分鐘 |
+
+## Render 休眠與恢復（持久化 Webhook）
+
+免費 Web Service 的冷啟動發生在程式接到請求之前，程式無法消除這段延遲；LINE 後台第一次 Verify 仍可能逾時。先開啟 `/health` 等服務醒來，再按 Verify。`/health` 只代表 HTTP 程序存活，不代表資料庫或外部 API 正常。
+
+**部署後請到 LINE Developers Console → Messaging API → Webhook settings 開啟 Webhook redelivery。** LINE 沒有保證每個失敗事件都一定會重送；沒有抵達應用程式、且沒有重送的事件仍無法恢復。
+
+新流程：驗證簽章 → 寫入 PostgreSQL `WEBHOOK_JOBS` → 回 HTTP 200 → 背景依序處理 AI/任務 → 發送已保存的回覆。
+
+- 只有資料庫保存成功才回 200；資料庫或佇列尚未就緒時回 503，交由 LINE 重送。LINE 的空事件 Verify 不查資料庫。
+- 以 `webhookEventId` 去重（舊事件以 `message.id` 備援）。任務變更與待回覆內容在同一個交易提交；重送及重新啟動不會重新執行已處理的事件。
+- 背景工作以 PostgreSQL advisory lock 協調重疊部署。佇列適合目前個人 Bot 的低流量，依入列順序處理；AI 最長等待 20 秒，LINE API 最長 10 秒。
+- Reply 明確回傳 `Invalid reply token` 時，改成 Push 到原本的使用者／群組／聊天室。**Push 會使用 LINE 訊息額度**，仍可能因額度、封鎖或權限失敗。一般 4xx 不重試、不改用 Push。
+- Push 暫時失敗使用同一個持久化 `X-Line-Retry-Key` 重試，採有限次數的退避，且不超過第一次 Push 後 23 小時。Reply 逾時或程序在 Reply 中斷時，無法判斷是否已送達，會停止自動補送並留下 `LastError`，避免重複訊息；已新增的任務仍保留。
+- 超過 10 分鐘的舊事件不再執行指令，回覆請使用者重新傳送，避免把舊的「明天」解讀成恢復當天的明天。AI 暫時失敗會保留尚未過期的提議，回覆可重試的訊息。
+- 已結束的佇列紀錄保留 7 天，包含輸入及回覆，之後定期清除；去重保證也只涵蓋紀錄保留期間。請限制資料庫存取權限。未完成的工作保留等待恢復。
+
+`WEBHOOK_JOBS` 是新增的獨立資料表，啟動時會自動執行內嵌的 `Linebot_jam/Linebot_jam/Data/WebhookQueue.sql`，不修改既有任務表。資料庫帳號需要建表／建索引權限；若正式環境限制 DDL，請先由管理者執行該 SQL。初始化失敗會每 5 秒重試並寫入日誌。全新資料庫仍要先執行 `CreateTable.sql` 建立業務資料表。
+
+提醒排程改成服務運作時每分鐘掃描，醒來後只補送當下適用的一個階段，例如已到期只送「已到期」，不補發「還有 3 天／1 天／3 小時」。**服務休眠期間背景排程不會執行**；若需要準時提醒，需使用不休眠的服務或獨立常駐排程。這次不自動變更 Render 付費方案。
+
+排查順序：先看 Render 是否出現 `Durable webhook queue ready`，再查 LINE Webhook 錯誤統計及 `WEBHOOK_JOBS.LastError`。處理嘗試上限為 3 次；回覆發送失敗不會再次新增任務。提醒推播仍沿用原本發送後記錄模式，多實例或發送後資料庫失敗的重複推播風險尚未全面改成 outbox。
+
+參考：[Render 免費服務限制](https://render.com/docs/free)、[LINE Webhook 重送](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)、[LINE API 安全重試](https://developers.line.biz/en/docs/messaging-api/retrying-api-request/)。
+
+### 回歸測試
+
+```bash
+dotnet test Linebot_jam/Linebot_jam.Tests/Linebot_jam.Tests.csproj -c Release
+```
+
+本機未設定 `LINEBOT_TEST_POSTGRES` 時，PostgreSQL 整合測試會標記略過。請只將此變數設為可測試的資料庫連線字串；整合測試會建立及刪除自身的隨機 schema。GitHub Actions 會啟動獨立 PostgreSQL 16，執行去重、交易回滾、重新啟動、過期事件與回覆中斷測試，不使用正式資料庫或 LINE/Groq 金鑰。

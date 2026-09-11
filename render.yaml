@@ -44,4 +44,4 @@ services:
       - key: Groq__Model
         value: openai/gpt-oss-120b
       - key: Reminder__IntervalMinutes
-        value: "60"
+        value: "1"

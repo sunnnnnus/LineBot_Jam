@@ -27,12 +27,13 @@ public class ReminderBackgroundService : BackgroundService
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
-        var minutes = configuration.GetValue<int?>("Reminder:IntervalMinutes") ?? 60;
-        _interval = TimeSpan.FromMinutes(minutes);
+        var minutes = configuration.GetValue<int?>("Reminder:IntervalMinutes") ?? 1;
+        _interval = TimeSpan.FromMinutes(Math.Max(1, minutes));
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await Task.Yield();
         using var timer = new PeriodicTimer(_interval);
         do
         {
@@ -40,6 +41,7 @@ public class ReminderBackgroundService : BackgroundService
             {
                 await ScanAndSendRemindersAsync(stoppingToken);
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Reminder scan failed.");
@@ -69,7 +71,7 @@ public class ReminderBackgroundService : BackgroundService
 
             foreach (var (type, leadTime, label) in Stages)
             {
-                if (timeUntilDue > leadTime)
+                if (type != ReminderStageSelector.Select(timeUntilDue))
                     continue;
 
                 var alreadySent = await db.ReminderLogs
@@ -81,7 +83,7 @@ public class ReminderBackgroundService : BackgroundService
                 {
                     var sent = await lineClient.PushMessageAsync(
                         task.User.LineUserId,
-                        $"提醒: {task.Content} {label}({task.DueAt:yyyy/MM/dd HH:mm})",
+                        $"提醒: {task.Content} {ReminderStageSelector.Describe(timeUntilDue)}({task.DueAt:yyyy/MM/dd HH:mm})",
                         ct);
 
                     if (sent)
