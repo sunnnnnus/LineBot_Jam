@@ -16,6 +16,16 @@ namespace Linebot_jam.Tests;
 public class ColdStartTests
 {
     [DataTestMethod]
+    [DataRow(3861, "約剩 2 天 17 小時到期")]
+    [DataRow(2880, "約剩 2 天到期")]
+    [DataRow(120, "約剩 2 小時到期")]
+    [DataRow(61, "約剩 1 小時 1 分鐘到期")]
+    [DataRow(10, "約剩 10 分鐘到期")]
+    [DataRow(0, "已到期")]
+    public void RemainingTimeUsesReadableUnits(int minutes, string expected) =>
+        Assert.AreEqual(expected, ReminderStageSelector.Describe(TimeSpan.FromMinutes(minutes)));
+
+    [DataTestMethod]
     [DataRow(120, "3h_before")]
     [DataRow(180, "3h_before")]
     [DataRow(181, "1d_before")]
