@@ -23,6 +23,7 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<User> Users { get; set; }
 
     public DbSet<WebhookJob> WebhookJobs { get; set; }
+    public DbSet<ReminderDispatch> ReminderDispatches { get; set; }
 
     // Fallback used only by design-time tooling (e.g. `dotnet ef migrations`) when no DI-provided
     // options are available. The IsConfigured check is essential: without it, this unconditionally
@@ -38,6 +39,12 @@ public partial class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<ReminderDispatch>(entity =>
+        {
+            entity.ToTable("REMINDER_DISPATCHES");
+            entity.HasKey(e => new { e.TaskId, e.ReminderType });
+            entity.HasOne<WebhookJob>().WithMany().HasForeignKey(e => e.EventId).OnDelete(DeleteBehavior.Cascade);
+        });
         modelBuilder.Entity<WebhookJob>(entity =>
         {
             entity.ToTable("WEBHOOK_JOBS");

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Linebot_jam.Data;
+using Linebot_jam.Controllers;
 using Linebot_jam.Models;
 using Linebot_jam.Models.Line;
 using Microsoft.EntityFrameworkCore;
@@ -40,7 +41,8 @@ public class WebhookBackgroundService(IServiceScopeFactory scopes,
                     using var scope = scopes.CreateScope();
                     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var cutoff = DateTime.UtcNow.AddDays(-7);
-                    await db.WebhookJobs.Where(j => j.Finished && j.ReceivedAt < cutoff)
+                    await db.WebhookJobs.Where(j => j.Finished && j.ReceivedAt < cutoff &&
+                        (j.LastError == null || !j.EventId.StartsWith(ReminderProcessor.BatchPrefix)))
                         .ExecuteDeleteAsync(stoppingToken);
                     nextCleanup = DateTime.UtcNow.AddHours(1);
                 }
@@ -74,7 +76,9 @@ public class WebhookBackgroundService(IServiceScopeFactory scopes,
             var evt = JsonSerializer.Deserialize<LineEvent>(job.Payload)!;
             job.Destination = evt.Source?.PushDestination;
             // Old events should not silently interpret "tomorrow" relative to a later day.
-            if (evt.Timestamp > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - evt.Timestamp > 10 * 60 * 1000)
+            if (evt.Type == ReminderController.TriggerType)
+                await scope.ServiceProvider.GetRequiredService<ReminderProcessor>().QueueDueRemindersAsync(ct);
+            else if (evt.Timestamp > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - evt.Timestamp > 10 * 60 * 1000)
                 await reply.ReplyMessageAsync(evt.ReplyToken!, "服務剛恢復，這則訊息已超過 10 分鐘，尚未執行。請重新傳送要處理的事項。");
             else
                 await scope.ServiceProvider.GetRequiredService<LineEventProcessor>().HandleTextMessageAsync(evt);
@@ -104,9 +108,15 @@ public class WebhookBackgroundService(IServiceScopeFactory scopes,
                 retry.NextAttemptAt = DateTime.UtcNow.AddSeconds(5);
                 if (retry.ProcessingAttempts >= 3)
                 {
-                    await reply.ReplyMessageAsync("", "服務暫時無法處理，這次沒有新增任務。請稍後重新傳送。");
-                    retry.ReplyMessages = reply.MessagesJson;
-                    retry.Destination = JsonSerializer.Deserialize<LineEvent>(retry.Payload)?.Source?.PushDestination;
+                    var failedEvent = JsonSerializer.Deserialize<LineEvent>(retry.Payload);
+                    if (failedEvent?.Type == ReminderController.TriggerType)
+                        retry.Finished = true; // Keep LastError for operations; the next scheduler run can retry.
+                    else
+                    {
+                        await reply.ReplyMessageAsync("", "服務暫時無法處理，這次沒有新增任務。請稍後重新傳送。");
+                        retry.ReplyMessages = reply.MessagesJson;
+                        retry.Destination = failedEvent?.Source?.PushDestination;
+                    }
                     retry.Processed = true;
                 }
                 await db.SaveChangesAsync(ct);
@@ -157,6 +167,15 @@ public class WebhookBackgroundService(IServiceScopeFactory scopes,
                 return true; // Reservation expired or was handled by another worker.
             var result = await scope.ServiceProvider.GetRequiredService<WebhookDeliveryClient>().SendAsync(job, ct);
             ApplyDeliveryResult(job, result, DateTime.UtcNow);
+            if (result == DeliveryResult.Accepted && job.EventId.StartsWith(ReminderProcessor.BatchPrefix))
+            {
+                var dispatched = await db.ReminderDispatches.Where(d => d.EventId == job.EventId).ToListAsync(ct);
+                foreach (var item in dispatched)
+                {
+                    if (!await db.ReminderLogs.AnyAsync(r => r.TaskId == item.TaskId && r.ReminderType == item.ReminderType, ct))
+                        db.ReminderLogs.Add(new ReminderLog { TaskId = item.TaskId, ReminderType = item.ReminderType, Channel = "LINE" });
+                }
+            }
             await db.SaveChangesAsync(ct);
             await deliveryTransaction.CommitAsync(ct);
             LogDelivery(job);

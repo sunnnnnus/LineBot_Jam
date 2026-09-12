@@ -21,3 +21,11 @@ CREATE INDEX IF NOT EXISTS "IX_WebhookJobs_Pending"
     ON "WEBHOOK_JOBS" ("Sequence") WHERE NOT "Processed";
 CREATE INDEX IF NOT EXISTS "IX_WebhookJobs_Delivery"
     ON "WEBHOOK_JOBS" ("NextAttemptAt") WHERE "Processed" AND NOT "Finished";
+
+CREATE TABLE IF NOT EXISTS "REMINDER_DISPATCHES" (
+    "TaskId" INTEGER NOT NULL,
+    "ReminderType" TEXT NOT NULL,
+    "EventId" TEXT NOT NULL REFERENCES "WEBHOOK_JOBS" ("EventId") ON DELETE CASCADE,
+    PRIMARY KEY ("TaskId", "ReminderType")
+);
+CREATE INDEX IF NOT EXISTS "IX_ReminderDispatches_EventId" ON "REMINDER_DISPATCHES" ("EventId");

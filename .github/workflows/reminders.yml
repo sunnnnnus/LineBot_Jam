@@ -1,0 +1,22 @@
+name: Reminder scheduler
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: reminder-scheduler
+  cancel-in-progress: false
+jobs:
+  trigger:
+    # Configure both ends and complete a manual test before enabling scheduled traffic.
+    if: github.event_name == 'workflow_dispatch' || vars.REMINDER_SCHEDULER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/trigger_reminders.py
+        env:
+          REMINDER_BASE_URL: ${{ vars.REMINDER_BASE_URL }}
+          REMINDER_SCHEDULER_TOKEN: ${{ secrets.REMINDER_SCHEDULER_TOKEN }}

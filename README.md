@@ -1,5 +1,7 @@
 # LineBot_Jam — LINE 任務提醒 Bot
 
+> Render Free 可改用 **每 30 分鐘的 GitHub Actions 外部排程**；設定、啟用與持久化提醒流程見 [外部排程指南](docs/scheduler.md)。新版提醒使用 outbox 與逐件預約取代下方舊版「直接推播後記錄」流程。
+
 使用者可以直接用口語化的方式跟 LINE Bot 說要新增什麼待辦事項(例如「明天下午6點提醒我倒垃圾」),由 Groq API(function calling,OpenAI 相容格式)判斷意圖、解析事項與到期時間,資訊不足時會主動反問,確認後才寫入資料庫;到期前主動分階段推播提醒。非新增任務相關的訊息則由 AI 自由對話回覆(帶入使用者目前的待辦事項作為 context)。
 
 ## 技術棧

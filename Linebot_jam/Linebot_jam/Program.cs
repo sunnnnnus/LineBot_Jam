@@ -33,6 +33,8 @@ builder.Services.AddScoped<IWebhookQueue, WebhookQueue>();
 builder.Services.AddScoped<PendingLineReply>();
 builder.Services.AddScoped<LineEventProcessor>();
 builder.Services.AddHostedService<WebhookBackgroundService>();
+builder.Services.AddSingleton<ReminderProcessor>();
+builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.Configure<LineOptions>(builder.Configuration.GetSection("Line"));
 builder.Services.AddSingleton<ILineSignatureValidator, LineSignatureValidator>();
@@ -61,7 +63,9 @@ builder.Services.AddHttpClient<IAiClient, GroqClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 
-builder.Services.AddHostedService<ReminderBackgroundService>();
+// Keep the local timer until the operator has enabled the external scheduler.
+if (!builder.Configuration.GetValue<bool>("Reminder:UseExternalScheduler"))
+    builder.Services.AddHostedService<ReminderBackgroundService>();
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

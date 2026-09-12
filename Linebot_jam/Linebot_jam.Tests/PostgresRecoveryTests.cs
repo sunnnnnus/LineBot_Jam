@@ -44,7 +44,15 @@ public class PostgresRecoveryTests
         services.AddScoped<LineEventProcessor>();
         services.AddSingleton<IAiClient, FakeAi>();
         services.AddSingleton<ILineMessagingClient>(_line);
-        services.AddSingleton(ColdStartTests.Client(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK))));
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+        services.AddSingleton<ReminderProcessor>();
+        services.AddSingleton(ColdStartTests.Client(async request =>
+        {
+            if (!_line.Accept) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            _line.Messages.Add(json.RootElement.GetProperty("messages")[0].GetProperty("text").GetString()!);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }));
         _services = services.BuildServiceProvider();
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -87,8 +95,10 @@ public class PostgresRecoveryTests
     public async Task NearbyRemindersSendOnceAcrossConcurrentAndRepeatedScans()
     {
         await SeedReminders();
-        await Task.WhenAll(Reminders().ScanAndSendRemindersAsync(default), Reminders().ScanAndSendRemindersAsync(default));
-        await Reminders().ScanAndSendRemindersAsync(default);
+        await Task.WhenAll(Reminders().QueueDueRemindersAsync(default), Reminders().QueueDueRemindersAsync(default));
+        await Reminders().QueueDueRemindersAsync(default);
+        Assert.AreEqual(0, _line.Messages.Count); // Scheduling performs no network delivery.
+        await Worker().DeliverNextAsync(default);
         Assert.AreEqual(1, _line.Messages.Count);
         StringAssert.Contains(_line.Messages.Single(), "2 件待辦");
         using var scope = _services!.CreateScope();
@@ -100,11 +110,21 @@ public class PostgresRecoveryTests
     {
         await SeedReminders();
         _line.Accept = false;
-        await Reminders().ScanAndSendRemindersAsync(default);
+        await Reminders().QueueDueRemindersAsync(default);
+        await Worker().DeliverNextAsync(default);
         using (var scope = _services!.CreateScope())
             Assert.AreEqual(0, await scope.ServiceProvider.GetRequiredService<AppDbContext>().ReminderLogs.CountAsync());
         _line.Accept = true;
-        await Reminders().ScanAndSendRemindersAsync(default);
+        await Reminders().QueueDueRemindersAsync(default);
+        using (var scope = _services!.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            Assert.AreEqual(1, await db.WebhookJobs.CountAsync());
+            var job = await db.WebhookJobs.SingleAsync();
+            job.NextAttemptAt = DateTime.UtcNow.AddSeconds(-1);
+            await db.SaveChangesAsync();
+        }
+        await Worker().DeliverNextAsync(default);
         using var finalScope = _services!.CreateScope();
         Assert.AreEqual(2, await finalScope.ServiceProvider.GetRequiredService<AppDbContext>().ReminderLogs.CountAsync());
     }
@@ -120,8 +140,24 @@ public class PostgresRecoveryTests
         await db.SaveChangesAsync();
     }
 
-    private ReminderBackgroundService Reminders() => new(_services!.GetRequiredService<IServiceScopeFactory>(),
-        NullLogger<ReminderBackgroundService>.Instance, new ConfigurationBuilder().Build());
+    private ReminderProcessor Reminders() => _services!.GetRequiredService<ReminderProcessor>();
+
+    [TestMethod]
+    public async Task ExternalTriggerSurvivesRestartAndQueuesRemindersOnlyOnce()
+    {
+        await SeedReminders();
+        var evt = new LineEvent { WebhookEventId = "reminder-scan:test", Type = "reminder_scan" };
+        await Enqueue(evt);
+        await Worker().ProcessNextAsync(default);
+        await Enqueue(evt);
+        Assert.IsFalse(await Worker().ProcessNextAsync(default));
+        await Worker().DeliverNextAsync(default);
+        Assert.AreEqual(1, _line.Messages.Count);
+        using var scope = _services!.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.AreEqual(2, await db.ReminderLogs.CountAsync());
+        Assert.AreEqual(2, await db.ReminderDispatches.CountAsync());
+    }
 
     private sealed class RecordingLineClient : ILineMessagingClient
     {

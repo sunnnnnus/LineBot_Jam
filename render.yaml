@@ -44,4 +44,9 @@ services:
       - key: Groq__Model
         value: openai/gpt-oss-120b
       - key: Reminder__IntervalMinutes
-        value: "1"
+        value: "30"
+      # Switch to true only after the GitHub scheduler is configured and manually verified.
+      - key: Reminder__UseExternalScheduler
+        value: "false"
+      - key: Reminder__SchedulerToken
+        sync: false
