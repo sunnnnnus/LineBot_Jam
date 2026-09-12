@@ -70,7 +70,7 @@ public class LineEventProcessor
 
             if (CancelWords.Contains(trimmed))
             {
-                await CancelPendingAsync(user, replyToken, "好的,已取消。");
+                await CancelPendingAsync(user, replyToken, "👌 好的,已取消。");
                 return;
             }
 
@@ -104,7 +104,7 @@ public class LineEventProcessor
 
             await _db.SaveChangesAsync();
             await _messagingClient.ReplyMessageAsync(replyToken,
-                "AI 服務暫時忙碌，這次沒有新增任務。請稍後重試；也可以使用「新增 事項 月/日 時:分」。");
+                "⏳ AI 服務暫時忙碌，這次沒有新增任務。請稍後重試；也可以使用「新增 事項 月/日 時:分」。");
             return;
         }
 
@@ -118,7 +118,7 @@ public class LineEventProcessor
 
         if (calls.Any(c => c.Name == "cancel_task"))
         {
-            await CancelPendingAsync(user, replyToken, "好的,已取消。");
+            await CancelPendingAsync(user, replyToken, "👌 好的,已取消。");
             return;
         }
 
@@ -127,6 +127,23 @@ public class LineEventProcessor
             .Where(c => c.Name == "create_tasks")
             .SelectMany(ReadProposals)
             .ToList();
+
+        // 「倒垃圾做完了,另外明天要開會」這種訊息會同時有完成與新增,合併成一則回覆。
+        var completion = calls.FirstOrDefault(c => c.Name == "complete_tasks");
+        if (completion is not null)
+        {
+            var summary = await CompleteTasksAsync(user, completion);
+            if (proposals.Count > 0)
+            {
+                SetPendingTasks(user, proposals);
+                user.PendingRawInput = null;
+                summary += "\n\n" + BuildConfirmPrompt(proposals);
+            }
+
+            await _db.SaveChangesAsync();
+            await _messagingClient.ReplyMessageAsync(replyToken, summary);
+            return;
+        }
 
         if (proposals.Count > 0)
         {
@@ -212,11 +229,11 @@ public class LineEventProcessor
         if (proposals.Count == 1)
         {
             var only = proposals[0];
-            return $"要幫你新增:「{only.Content}」\n到期時間:{only.DueAt:yyyy/MM/dd HH:mm}\n確定嗎?(回覆「確定」或「取消」)";
+            return $"📝 要幫你新增:「{only.Content}」\n到期時間:{only.DueAt:yyyy/MM/dd HH:mm}\n確定嗎?(回覆「確定」或「取消」)";
         }
 
         var sb = new StringBuilder();
-        sb.AppendLine($"要幫你新增 {proposals.Count} 筆:");
+        sb.AppendLine($"📝 要幫你新增 {proposals.Count} 筆:");
         for (var i = 0; i < proposals.Count; i++)
             sb.AppendLine($"{i + 1}. {proposals[i].Content}({proposals[i].DueAt:yyyy/MM/dd HH:mm})");
         sb.Append("確定嗎?(回覆「確定」或「取消」)");
@@ -246,10 +263,9 @@ public class LineEventProcessor
 
     private async Task ConfirmPendingTasksAsync(User user, string replyToken)
     {
-        var proposals = ReadPendingTasks(user);
+        var stored = ReadPendingTasks(user);
 
-        if (!user.PendingUpdatedAt.HasValue || DateTime.Now - user.PendingUpdatedAt.Value >= TimeSpan.FromMinutes(10)
-            || proposals.Any(p => p.DueAt <= DateTime.Now))
+        if (!user.PendingUpdatedAt.HasValue || DateTime.Now - user.PendingUpdatedAt.Value >= TimeSpan.FromMinutes(10))
         {
             ClearPending(user);
             await _db.SaveChangesAsync();
@@ -257,9 +273,21 @@ public class LineEventProcessor
             return;
         }
 
-        if (proposals.Count == 0)
+        if (stored.Count == 0)
         {
             await _messagingClient.ReplyMessageAsync(replyToken, "目前沒有等待確認的任務喔。");
+            return;
+        }
+
+        // 只丟掉真的已過期的那幾筆，其餘照常新增；整批作廢會讓使用者白打一串清單。
+        var proposals = stored.Where(p => p.DueAt > DateTime.Now).ToList();
+        var skipped = stored.Count - proposals.Count;
+
+        if (proposals.Count == 0)
+        {
+            ClearPending(user);
+            await _db.SaveChangesAsync();
+            await _messagingClient.ReplyMessageAsync(replyToken, "這份提議已過期，請重新提供事項與時間。");
             return;
         }
 
@@ -281,16 +309,82 @@ public class LineEventProcessor
         var sb = new StringBuilder();
         if (proposals.Count == 1)
         {
-            sb.Append($"已新增:{proposals[0].Content}\n到期時間:{proposals[0].DueAt:yyyy/MM/dd HH:mm}");
+            sb.Append($"✅ 已新增:{proposals[0].Content}\n到期時間:{proposals[0].DueAt:yyyy/MM/dd HH:mm}");
         }
         else
         {
-            sb.AppendLine($"已新增 {proposals.Count} 筆:");
+            sb.AppendLine($"✅ 已新增 {proposals.Count} 筆:");
             for (var i = 0; i < proposals.Count; i++)
                 sb.AppendLine($"{i + 1}. {proposals[i].Content}({proposals[i].DueAt:yyyy/MM/dd HH:mm})");
         }
 
+        if (skipped > 0)
+            sb.Append($"\n\n⚠️ 另有 {skipped} 筆的時間已經過了,沒有新增,需要的話再告訴我新的時間。");
+
         await _messagingClient.ReplyMessageAsync(replyToken, sb.ToString().TrimEnd());
+    }
+
+    // 回傳要給使用者看的結果文字;不在這裡 SaveChanges,交給呼叫端跟其他變更一起提交。
+    private async Task<string> CompleteTasksAsync(User user, AiFunctionCall call)
+    {
+        var ids = ReadTaskIds(call);
+        if (ids.Count == 0)
+            return "我不確定你指的是哪一筆待辦,可以說得更具體一點嗎?";
+
+        // 一律用 LineUserId 限縮範圍:模型給的編號不可信,不能讓它改到別人的資料。
+        var tasks = await _db.Tasks
+            .Where(t => t.User.LineUserId == user.LineUserId && t.Status == "pending" && ids.Contains(t.Id))
+            .ToListAsync();
+
+        if (tasks.Count == 0)
+            return "這幾筆待辦我找不到(可能已經完成過了),你可以先問我目前還有哪些待辦。";
+
+        foreach (var task in tasks)
+        {
+            task.Status = "done";
+            task.UpdatedAt = DateTime.Now;
+        }
+
+        var sb = new StringBuilder();
+        if (tasks.Count == 1)
+        {
+            sb.Append($"✅ 已完成:{tasks[0].Content}");
+        }
+        else
+        {
+            sb.AppendLine($"✅ 已完成 {tasks.Count} 筆:");
+            foreach (var task in tasks)
+                sb.AppendLine($"・{task.Content}");
+        }
+
+        var missing = ids.Count - tasks.Count;
+        if (missing > 0)
+            sb.Append($"\n\n⚠️ 另有 {missing} 筆找不到或已經完成過了。");
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static List<int> ReadTaskIds(AiFunctionCall call)
+    {
+        var ids = new List<int>();
+        if (call.Args is not JsonElement args
+            || args.ValueKind != JsonValueKind.Object
+            || !args.TryGetProperty("task_ids", out var idsEl)
+            || idsEl.ValueKind != JsonValueKind.Array)
+        {
+            return ids;
+        }
+
+        foreach (var item in idsEl.EnumerateArray())
+        {
+            // 模型偶爾會把數字包成字串,兩種都收。
+            if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out var number))
+                ids.Add(number);
+            else if (item.ValueKind == JsonValueKind.String && int.TryParse(item.GetString(), out var parsed))
+                ids.Add(parsed);
+        }
+
+        return ids.Distinct().ToList();
     }
 
     private async Task CancelPendingAsync(User user, string replyToken, string message)
@@ -311,19 +405,21 @@ public class LineEventProcessor
     {
         var sb = new StringBuilder();
         sb.AppendLine("你是一個 LINE 任務提醒機器人的助理,請用繁體中文回覆使用者,語氣自然、簡短。");
+        sb.AppendLine("回覆可自然加入 1～2 個合適的 emoji（例如 😊、📝、✅），避免每句都加；嚴肅或災害相關問題保持克制。工具參數中的待辦內容請保留原意，不要自行加 emoji。");
         sb.AppendLine($"目前時間:{DateTime.Now:yyyy-MM-dd HH:mm}({DateTime.Now:dddd})");
 
         var tasks = await _db.Tasks
             .Where(t => t.User.LineUserId == user.LineUserId && t.Status == "pending")
             .OrderBy(t => t.DueAt)
-            .Take(10)
+            .Take(30)
             .ToListAsync();
 
         if (tasks.Count > 0)
         {
-            sb.AppendLine("使用者目前的待辦事項:");
+            // 帶編號讓使用者可以用自然語言指涉某一筆(complete_tasks 要用這個編號)
+            sb.AppendLine("使用者目前的待辦事項(編號供 complete_tasks 使用):");
             foreach (var t in tasks)
-                sb.AppendLine($"- {t.Content}(到期: {t.DueAt:yyyy/MM/dd HH:mm})");
+                sb.AppendLine($"- [{t.Id}] {t.Content}(到期: {t.DueAt:yyyy/MM/dd HH:mm})");
         }
         else
         {
@@ -347,6 +443,9 @@ public class LineEventProcessor
             sb.AppendLine("如果多件待辦共用同一個時間(例如開頭只寫了一次「9/14 11點」),就把那個時間套用到每一筆。");
             sb.AppendLine("如果使用者看起來想新增待辦但缺少必要資訊(例如沒說時間),呼叫 ask_clarification 提出簡短的追問。");
         }
+
+        if (tasks.Count > 0)
+            sb.AppendLine("如果使用者表示某些既有待辦已經做完,呼叫 complete_tasks 並填入對應的編號。");
 
         sb.AppendLine("如果使用者只是聊天或詢問既有待辦事項,不要呼叫任何函式,直接文字回覆。");
         return sb.ToString();

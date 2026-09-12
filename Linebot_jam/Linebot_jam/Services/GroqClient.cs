@@ -88,6 +88,31 @@ public class GroqClient : IAiClient
                     properties = new { }
                 }
             }
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "complete_tasks",
+                description = "當使用者表示某些既有待辦事項已經做完時呼叫此函式(例如「倒垃圾好了」、「第2件完成」、「開會跟繳費都done了」)。" +
+                              "task_ids 請填上方待辦清單中對應項目的編號,一次可以填多筆。" +
+                              "只能填清單裡真的存在的編號,不確定是哪一筆時不要猜,改用文字回覆詢問使用者。",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        task_ids = new
+                        {
+                            type = "array",
+                            description = "要標記為完成的待辦編號",
+                            items = new { type = "integer" }
+                        }
+                    },
+                    required = new[] { "task_ids" }
+                }
+            }
         }
     };
 

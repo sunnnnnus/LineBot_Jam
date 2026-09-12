@@ -6,19 +6,12 @@ namespace Linebot_jam.Services;
 
 public class ReminderBackgroundService : BackgroundService
 {
-    private static readonly (string Type, TimeSpan LeadTime, string Label)[] Stages =
-    {
-        ("3d_before", TimeSpan.FromDays(3), "還有 3 天到期"),
-        ("1d_before", TimeSpan.FromDays(1), "還有 1 天到期"),
-        ("3h_before", TimeSpan.FromHours(3), "還有 3 小時到期"),
-        ("due", TimeSpan.Zero, "已到期")
-    };
-
-    private static readonly TimeSpan MaxLeadTime = Stages[0].LeadTime;
+    private static readonly TimeSpan MaxLeadTime = TimeSpan.FromDays(3);
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<ReminderBackgroundService> _logger;
     private readonly TimeSpan _interval;
+    private readonly TimeSpan _mergeWindow;
 
     public ReminderBackgroundService(
         IServiceScopeFactory scopeFactory,
@@ -29,6 +22,8 @@ public class ReminderBackgroundService : BackgroundService
         _logger = logger;
         var minutes = configuration.GetValue<int?>("Reminder:IntervalMinutes") ?? 1;
         _interval = TimeSpan.FromMinutes(Math.Max(1, minutes));
+        _mergeWindow = TimeSpan.FromMinutes(Math.Clamp(
+            configuration.GetValue<int?>("Reminder:MergeWindowMinutes") ?? 30, 0, 1440));
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -50,62 +45,45 @@ public class ReminderBackgroundService : BackgroundService
         while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
-    private async Task ScanAndSendRemindersAsync(CancellationToken ct)
+    public async Task ScanAndSendRemindersAsync(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var lineClient = scope.ServiceProvider.GetRequiredService<ILineMessagingClient>();
-
         var now = DateTime.Now;
-        var candidates = await db.Tasks
-            .Include(t => t.User)
+        var tasks = await db.Tasks.AsNoTracking()
+            .Include(t => t.User).Include(t => t.ReminderLogs)
             .Where(t => t.Status == "pending" && t.DueAt <= now + MaxLeadTime)
             .ToListAsync(ct);
+        var candidates = tasks.Select(t => new ReminderCandidate(t, ReminderStageSelector.Select(t.DueAt - now)!))
+            .Where(c => !c.Task.ReminderLogs.Any(r => r.ReminderType == c.Stage));
 
-        if (candidates.Count == 0)
-            return;
-
-        foreach (var task in candidates)
+        foreach (var batch in ReminderBatchBuilder.Group(candidates, _mergeWindow))
         {
-            var timeUntilDue = task.DueAt - now;
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            // Overlapping deployments must recheck logs after acquiring the sender lock.
+            await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(74129004)", ct);
+            var ids = batch.Select(c => c.Task.Id).ToArray();
+            var stage = batch[0].Stage;
+            var sentIds = await db.ReminderLogs.Where(r => ids.Contains(r.TaskId) && r.ReminderType == stage)
+                .Select(r => r.TaskId).ToListAsync(ct);
+            var unsent = batch.Where(c => !sentIds.Contains(c.Task.Id)).ToList();
+            if (unsent.Count == 0) continue;
 
-            foreach (var (type, leadTime, label) in Stages)
+            // Save one log per task only when the entire message was accepted.
+            var sent = await lineClient.PushMessageAsync(unsent[0].Task.User.LineUserId,
+                ReminderBatchBuilder.Format(unsent, now), ct);
+            if (!sent)
             {
-                if (type != ReminderStageSelector.Select(timeUntilDue))
-                    continue;
-
-                var alreadySent = await db.ReminderLogs
-                    .AnyAsync(r => r.TaskId == task.Id && r.ReminderType == type, ct);
-                if (alreadySent)
-                    continue;
-
-                try
-                {
-                    var sent = await lineClient.PushMessageAsync(
-                        task.User.LineUserId,
-                        $"提醒: {task.Content} {ReminderStageSelector.Describe(timeUntilDue)}({task.DueAt:yyyy/MM/dd HH:mm})",
-                        ct);
-
-                    if (sent)
-                    {
-                        db.ReminderLogs.Add(new ReminderLog
-                        {
-                            TaskId = task.Id,
-                            ReminderType = type,
-                            Channel = "LINE"
-                        });
-                        await db.SaveChangesAsync(ct);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Push failed for task {TaskId} stage {Stage}; will retry on next scan.", task.Id, type);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to send {Stage} reminder for task {TaskId}.", type, task.Id);
-                }
+                _logger.LogWarning("Reminder batch failed for {Count} tasks at {Stage}; retry on next scan.", unsent.Count, stage);
+                continue;
             }
+            db.ReminderLogs.AddRange(unsent.Select(c => new ReminderLog
+            {
+                TaskId = c.Task.Id, ReminderType = c.Stage, Channel = "LINE"
+            }));
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
         }
     }
 }
