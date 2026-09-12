@@ -32,6 +32,7 @@ builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connect
 builder.Services.AddScoped<IWebhookQueue, WebhookQueue>();
 builder.Services.AddScoped<PendingLineReply>();
 builder.Services.AddScoped<LineEventProcessor>();
+builder.Services.AddScoped<LineUserContext>();
 builder.Services.AddHostedService<WebhookBackgroundService>();
 builder.Services.AddSingleton<ReminderProcessor>();
 builder.Services.AddSingleton(TimeProvider.System);

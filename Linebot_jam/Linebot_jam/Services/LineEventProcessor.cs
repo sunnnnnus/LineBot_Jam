@@ -13,14 +13,16 @@ public class LineEventProcessor
     private readonly IAiClient _aiClient;
     private readonly AppDbContext _db;
     private readonly ILogger<LineEventProcessor> _logger;
+    private readonly LineUserContext _currentUser;
 
     public LineEventProcessor(PendingLineReply messagingClient, IAiClient aiClient,
-        AppDbContext db, ILogger<LineEventProcessor> logger)
+        AppDbContext db, ILogger<LineEventProcessor> logger, LineUserContext currentUser)
     {
         _messagingClient = messagingClient;
         _aiClient = aiClient;
         _db = db;
         _logger = logger;
+        _currentUser = currentUser;
     }
     // 快速路徑:命中就不用等 AI,大部分使用者會照著我們的提示回這兩個字
     private static readonly HashSet<string> ConfirmWords = new(StringComparer.OrdinalIgnoreCase)
@@ -36,21 +38,14 @@ public class LineEventProcessor
     public async Task HandleTextMessageAsync(LineEvent evt)
     {
         var text = evt.Message!.Text ?? string.Empty;
-        var lineUserId = evt.Source?.UserId;
         var replyToken = evt.ReplyToken!;
 
-        if (string.IsNullOrEmpty(lineUserId))
+        var user = await _currentUser.ResolveAsync(evt.Source);
+        if (user is null)
         {
             _logger.LogWarning("Message has no source userId; cannot process.");
             await _messagingClient.ReplyMessageAsync(replyToken, "無法辨識你的使用者身分。");
             return;
-        }
-
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.LineUserId == lineUserId);
-        if (user is null)
-        {
-            user = new User { LineUserId = lineUserId };
-            _db.Users.Add(user);
         }
 
         var now = DateTime.Now;
@@ -293,7 +288,7 @@ public class LineEventProcessor
 
         foreach (var proposal in proposals)
         {
-            _db.Tasks.Add(new TaskItem
+            _currentUser.AddTask(new TaskItem
             {
                 User = user,
                 Content = proposal.Content,
@@ -331,9 +326,9 @@ public class LineEventProcessor
         if (ids.Count == 0)
             return "我不確定你指的是哪一筆待辦,可以說得更具體一點嗎?";
 
-        // 一律用 LineUserId 限縮範圍:模型給的編號不可信,不能讓它改到別人的資料。
-        var tasks = await _db.Tasks
-            .Where(t => t.User.LineUserId == user.LineUserId && t.Status == "pending" && ids.Contains(t.Id))
+        // 使用者主鍵由已驗證的 webhook 決定，不能採用 AI 提供的身分或任務擁有者。
+        var tasks = await _currentUser.Tasks
+            .Where(t => t.Status == "pending" && ids.Contains(t.Id))
             .ToListAsync();
 
         if (tasks.Count == 0)
@@ -408,8 +403,8 @@ public class LineEventProcessor
         sb.AppendLine("回覆可自然加入 1～2 個合適的 emoji（例如 😊、📝、✅），避免每句都加；嚴肅或災害相關問題保持克制。工具參數中的待辦內容請保留原意，不要自行加 emoji。");
         sb.AppendLine($"目前時間:{DateTime.Now:yyyy-MM-dd HH:mm}({DateTime.Now:dddd})");
 
-        var tasks = await _db.Tasks
-            .Where(t => t.User.LineUserId == user.LineUserId && t.Status == "pending")
+        var tasks = await _currentUser.Tasks
+            .Where(t => t.Status == "pending")
             .OrderBy(t => t.DueAt)
             .Take(30)
             .ToListAsync();

@@ -42,6 +42,7 @@ public class PostgresRecoveryTests
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(scopedConnection).AddInterceptors(_failure));
         services.AddScoped<PendingLineReply>();
         services.AddScoped<LineEventProcessor>();
+        services.AddScoped<LineUserContext>();
         services.AddSingleton<IAiClient, FakeAi>();
         services.AddSingleton<ILineMessagingClient>(_line);
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
@@ -292,6 +293,10 @@ public class PostgresRecoveryTests
         await Enqueue(Event("都做完了"));
         await Worker().ProcessNextAsync(default);
 
+        var instruction = ((FakeAi)_services!.GetRequiredService<IAiClient>()).LastInstruction;
+        StringAssert.Contains(instruction, "mine");
+        Assert.IsFalse(instruction.Contains("theirs"));
+
         using var check = _services!.CreateScope();
         var final = check.ServiceProvider.GetRequiredService<AppDbContext>();
         Assert.AreEqual("done", (await final.Tasks.SingleAsync(t => t.Id == mine)).Status);
@@ -302,6 +307,62 @@ public class PostgresRecoveryTests
     {
         using var scope = _services!.CreateScope();
         await new WebhookQueue(scope.ServiceProvider.GetRequiredService<AppDbContext>()).EnqueueAsync(new[] { evt }, default);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentFirstMessagesResolveTheSameUserWithoutLosingPendingState()
+    {
+        async Task<int> Resolve()
+        {
+            using var scope = _services!.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<LineUserContext>();
+            return (await context.ResolveAsync(new LineSource { Type = "user", UserId = "user-1" }))!.Id;
+        }
+
+        var ids = await Task.WhenAll(Resolve(), Resolve());
+        Assert.AreEqual(ids[0], ids[1]);
+        using (var scope = _services!.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var user = await db.Users.SingleAsync();
+            user.PendingRawInput = "my pending input";
+            await db.SaveChangesAsync();
+        }
+        Assert.AreEqual(ids[0], await Resolve());
+        using var check = _services!.CreateScope();
+        Assert.AreEqual("my pending input", (await check.ServiceProvider.GetRequiredService<AppDbContext>().Users.SingleAsync()).PendingRawInput);
+    }
+
+    [TestMethod]
+    public async Task UserContextScopesTasksAndRejectsIdentitySwitch()
+    {
+        using var scope = _services!.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var other = new User { LineUserId = "user-2" };
+        db.Tasks.Add(new TaskItem { User = other, Content = "private other task", DueAt = DateTime.Now.AddDays(1) });
+        await db.SaveChangesAsync();
+        var context = scope.ServiceProvider.GetRequiredService<LineUserContext>();
+        var me = await context.ResolveAsync(new LineSource { Type = "user", UserId = "user-1" });
+        context.AddTask(new TaskItem { User = other, UserId = other.Id, Content = "mine", DueAt = DateTime.Now.AddDays(1) });
+        await db.SaveChangesAsync();
+        var tasks = await context.Tasks.ToListAsync();
+        Assert.AreEqual(1, tasks.Count);
+        Assert.AreEqual("mine", tasks[0].Content);
+        Assert.AreEqual(me!.Id, tasks[0].UserId);
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => context.ResolveAsync(new LineSource { UserId = "user-2" }));
+    }
+
+    [TestMethod]
+    public async Task MissingIdentityNeverCreatesUserOrInvokesAi()
+    {
+        var evt = Event("hello");
+        evt.Source = new LineSource { Type = "group", GroupId = "group-1", UserId = " " };
+        await Enqueue(evt);
+        await Worker().ProcessNextAsync(default);
+        using var scope = _services!.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.AreEqual(0, await db.Users.CountAsync());
+        Assert.AreEqual(0, ((FakeAi)_services!.GetRequiredService<IAiClient>()).Calls);
     }
     private WebhookBackgroundService Worker() => new(_services!.GetRequiredService<IServiceScopeFactory>(),
         NullLogger<WebhookBackgroundService>.Instance);
@@ -314,10 +375,16 @@ public class PostgresRecoveryTests
     };
     private sealed class FakeAi : IAiClient
     {
+        public int Calls { get; private set; }
+        public string LastInstruction { get; private set; } = "";
         public AiResult Next { get; set; } = new() { Success = true, Text = "test reply" };
 
-        public Task<AiResult> GenerateAsync(string userInput, string systemInstruction, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Next);
+        public Task<AiResult> GenerateAsync(string userInput, string systemInstruction, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            LastInstruction = systemInstruction;
+            return Task.FromResult(Next);
+        }
     }
     private sealed class FailOutboxOnce : SaveChangesInterceptor
     {
