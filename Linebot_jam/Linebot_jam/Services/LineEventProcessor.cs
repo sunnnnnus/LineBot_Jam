@@ -69,7 +69,27 @@ public class LineEventProcessor
                 return;
             }
 
-            // 不是清單裡的精確字眼,交給 AI 判斷(它會知道目前有等待確認的提議)
+            if (WeekdayCorrection.TryResolveDate(trimmed, now, out var correctedDate))
+            {
+                var pending = ReadPendingTasks(user);
+                if (pending.Count != 1)
+                {
+                    await _messagingClient.ReplyMessageAsync(replyToken, "📝 請指定要修改哪一件待辦，以及完整日期與時間；目前還沒有新增。");
+                    return;
+                }
+                var corrected = new PendingTask(pending[0].Content, correctedDate + pending[0].DueAt.TimeOfDay);
+                if (corrected.DueAt <= now)
+                {
+                    await _messagingClient.ReplyMessageAsync(replyToken, "📝 這個時間已經過了，請提供未來的日期與時間；目前還沒有新增。");
+                    return;
+                }
+                SetPendingTasks(user, new[] { corrected });
+                await _db.SaveChangesAsync();
+                await _messagingClient.ReplyMessageAsync(replyToken, BuildConfirmPrompt(new[] { corrected }));
+                return;
+            }
+
+            // 其他補充交給 AI 產生新提議，AI 不可代替使用者確認寫入。
             await ProcessWithAiAsync(user, replyToken, text, text);
             return;
         }
@@ -93,7 +113,8 @@ public class LineEventProcessor
             if (TaskMessageParser.TryParse(rawText, DateTime.Now, out var fbContent, out var fbDueAt))
             {
                 SetPendingTasks(user, new List<PendingTask> { new(fbContent, fbDueAt) });
-                await ConfirmPendingTasksAsync(user, replyToken);
+                await _db.SaveChangesAsync();
+                await _messagingClient.ReplyMessageAsync(replyToken, BuildConfirmPrompt(ReadPendingTasks(user)));
                 return;
             }
 
@@ -104,12 +125,6 @@ public class LineEventProcessor
         }
 
         var calls = result.FunctionCalls;
-
-        if (calls.Any(c => c.Name == "confirm_task"))
-        {
-            await ConfirmPendingTasksAsync(user, replyToken);
-            return;
-        }
 
         if (calls.Any(c => c.Name == "cancel_task"))
         {
@@ -162,6 +177,16 @@ public class LineEventProcessor
             await _db.SaveChangesAsync();
 
             await _messagingClient.ReplyMessageAsync(replyToken, questionEl.GetString() ?? "可以再多說一點嗎?");
+            return;
+        }
+
+        // 保留待確認內容；模型誤回 confirm_task 或純文字都不能新增或悄悄清除提議。
+        var pendingTasks = ReadPendingTasks(user);
+        if (pendingTasks.Count > 0)
+        {
+            await _db.SaveChangesAsync();
+            await _messagingClient.ReplyMessageAsync(replyToken,
+                "📝 尚未新增。若要修改，請提供完整事項、日期與時間。\n\n" + BuildConfirmPrompt(pendingTasks));
             return;
         }
 
@@ -402,6 +427,8 @@ public class LineEventProcessor
         sb.AppendLine("你是一個 LINE 任務提醒機器人的助理,請用繁體中文回覆使用者,語氣自然、簡短。");
         sb.AppendLine("回覆可自然加入 1～2 個合適的 emoji（例如 😊、📝、✅），避免每句都加；嚴肅或災害相關問題保持克制。工具參數中的待辦內容請保留原意，不要自行加 emoji。");
         sb.AppendLine($"目前時間:{DateTime.Now:yyyy-MM-dd HH:mm}({DateTime.Now:dddd})");
+        var monday = DateTime.Today.AddDays(-(((int)DateTime.Today.DayOfWeek + 6) % 7));
+        sb.AppendLine($"週一為一週開始。本週是 {monday:yyyy/MM/dd} 至 {monday.AddDays(6):yyyy/MM/dd}；下週是 {monday.AddDays(7):yyyy/MM/dd} 至 {monday.AddDays(13):yyyy/MM/dd}。下禮拜日/下週日是 {monday.AddDays(13):yyyy/MM/dd}，不是本週日。");
 
         var tasks = await _currentUser.Tasks
             .Where(t => t.Status == "pending")
@@ -427,8 +454,8 @@ public class LineEventProcessor
             sb.AppendLine("目前有以下等待使用者確認的新待辦提議:");
             foreach (var p in pending)
                 sb.AppendLine($"- {p.Content}(到期: {p.DueAt:yyyy-MM-dd HH:mm})");
-            sb.AppendLine("如果使用者的回覆表示同意/確定,呼叫 confirm_task;表示不要/取消,呼叫 cancel_task;" +
-                          "如果使用者提供了不同或更完整的內容與時間,呼叫 create_tasks 以新內容取代提議;如果還不清楚,才用文字回覆詢問。");
+            sb.AppendLine("使用者提供不同或更完整的內容與時間時，呼叫 create_tasks 以新內容取代提議；只改日期時保留原本事項與時分。" +
+                          "例如「下禮拜日」是修正日期，不是同意新增。每次修改都必須重新確認。不要宣稱已新增，程式會在使用者明確回覆「確定」後儲存。表示取消時呼叫 cancel_task；不清楚時呼叫 ask_clarification。");
         }
         else
         {

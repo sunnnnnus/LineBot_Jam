@@ -55,7 +55,7 @@ public class PostgresRecoveryTests
             return new HttpResponseMessage(HttpStatusCode.OK);
         }));
         _services = services.BuildServiceProvider();
-        using var scope = _services.CreateScope();
+        using var scope = _services!.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         // This is a script, not an EF format string (SQL comments contain JSON braces).
         await using var setupConnection = new NpgsqlConnection(scopedConnection);
@@ -307,6 +307,60 @@ public class PostgresRecoveryTests
     {
         using var scope = _services!.CreateScope();
         await new WebhookQueue(scope.ServiceProvider.GetRequiredService<AppDbContext>()).EnqueueAsync(new[] { evt }, default);
+    }
+
+    [TestMethod]
+    public async Task DateCorrectionReproposesAndOnlyExplicitConfirmationCreatesTask()
+    {
+        await SeedPending();
+        DateTime original;
+        using (var scope = _services!.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var user = await db.Users.SingleAsync();
+            original = DateTime.Today.AddDays(1).AddHours(9);
+            user.PendingTasksJson = JsonSerializer.Serialize(new[] { new PendingTask("考英文", original) });
+            await db.SaveChangesAsync();
+        }
+        // Even if AI would mistakenly confirm, a date-only correction bypasses it.
+        ((FakeAi)_services!.GetRequiredService<IAiClient>()).Next = new AiResult
+        {
+            Success = true, FunctionCalls = new[] { new AiFunctionCall { Name = "confirm_task" } }
+        };
+        await Enqueue(Event("下禮拜日"));
+        await Worker().ProcessNextAsync(default);
+        WeekdayCorrection.TryResolveDate("下禮拜日", DateTime.Now, out var expectedDate);
+        using (var scope = _services!.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            Assert.AreEqual(0, await db.Tasks.CountAsync());
+            var proposal = JsonSerializer.Deserialize<List<PendingTask>>((await db.Users.SingleAsync()).PendingTasksJson!)!.Single();
+            Assert.AreEqual(expectedDate.AddHours(9), proposal.DueAt);
+            Assert.AreEqual("考英文", proposal.Content);
+            Assert.AreEqual(0, ((FakeAi)_services!.GetRequiredService<IAiClient>()).Calls);
+        }
+        var confirm = Event("確定");
+        confirm.WebhookEventId = "event-confirm";
+        await Enqueue(confirm);
+        await Worker().ProcessNextAsync(default);
+        using var check = _services!.CreateScope();
+        Assert.AreEqual(expectedDate.AddHours(9), (await check.ServiceProvider.GetRequiredService<AppDbContext>().Tasks.SingleAsync()).DueAt);
+    }
+
+    [TestMethod]
+    public async Task AiCannotConfirmPendingTaskOnBehalfOfUser()
+    {
+        await SeedPending();
+        ((FakeAi)_services!.GetRequiredService<IAiClient>()).Next = new AiResult
+        {
+            Success = true, FunctionCalls = new[] { new AiFunctionCall { Name = "confirm_task" } }
+        };
+        await Enqueue(Event("改成下週日下午三點"));
+        await Worker().ProcessNextAsync(default);
+        using var scope = _services!.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.AreEqual(0, await db.Tasks.CountAsync());
+        Assert.IsNotNull((await db.Users.SingleAsync()).PendingTasksJson);
     }
 
     [TestMethod]

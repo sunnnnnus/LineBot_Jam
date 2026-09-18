@@ -66,20 +66,6 @@ public class GroqClient : IAiClient
             type = "function",
             function = new
             {
-                name = "confirm_task",
-                description = "當目前有一個等待使用者確認的待辦提議,且使用者的回覆表示同意、確定要新增(不論用什麼說法)時呼叫此函式。",
-                parameters = new
-                {
-                    type = "object",
-                    properties = new { }
-                }
-            }
-        },
-        new
-        {
-            type = "function",
-            function = new
-            {
                 name = "cancel_task",
                 description = "當目前有一個等待使用者確認的待辦提議,且使用者的回覆表示不要、取消(不論用什麼說法)時呼叫此函式。",
                 parameters = new
