@@ -36,6 +36,12 @@ builder.Services.AddScoped<LineUserContext>();
 builder.Services.AddHostedService<WebhookBackgroundService>();
 builder.Services.AddSingleton<ReminderProcessor>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.Configure<GmailOptions>(builder.Configuration.GetSection("Gmail"));
+builder.Services.AddHttpClient<Linebot_jam.Services.Mail.IGmailReader, Linebot_jam.Services.Mail.GmailReader>(client => client.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHttpClient<Linebot_jam.Services.Mail.IMailClassifier, Linebot_jam.Services.Mail.GroqMailClassifier>(client => client.Timeout = TimeSpan.FromSeconds(45));
+builder.Services.AddScoped<Linebot_jam.Services.Mail.MailSyncService>();
+builder.Services.AddScoped<Linebot_jam.Services.Mail.MailInteraction>();
+builder.Services.AddHostedService<Linebot_jam.Services.Mail.MailBackgroundService>();
 
 builder.Services.Configure<LineOptions>(builder.Configuration.GetSection("Line"));
 builder.Services.AddSingleton<ILineSignatureValidator, LineSignatureValidator>();

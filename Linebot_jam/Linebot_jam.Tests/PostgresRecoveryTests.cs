@@ -16,7 +16,7 @@ namespace Linebot_jam.Tests;
 
 // CI supplies a disposable PostgreSQL service. Never point this at a production database.
 [TestClass]
-public class PostgresRecoveryTests
+public partial class PostgresRecoveryTests
 {
     private string _baseConnection = "";
     private string _schema = "";
@@ -43,6 +43,8 @@ public class PostgresRecoveryTests
         services.AddScoped<PendingLineReply>();
         services.AddScoped<LineEventProcessor>();
         services.AddScoped<LineUserContext>();
+        services.AddScoped<Linebot_jam.Services.Mail.MailInteraction>();
+        services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IAiClient, FakeAi>();
         services.AddSingleton<ILineMessagingClient>(_line);
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());

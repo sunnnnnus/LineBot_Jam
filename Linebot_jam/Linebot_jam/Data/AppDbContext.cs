@@ -24,6 +24,9 @@ public partial class AppDbContext : DbContext
 
     public DbSet<WebhookJob> WebhookJobs { get; set; }
     public DbSet<ReminderDispatch> ReminderDispatches { get; set; }
+    public DbSet<MailSyncState> MailSyncStates { get; set; }
+    public DbSet<MailReceipt> MailReceipts { get; set; }
+    public DbSet<MailProposal> MailProposals { get; set; }
 
     // Fallback used only by design-time tooling (e.g. `dotnet ef migrations`) when no DI-provided
     // options are available. The IsConfigured check is essential: without it, this unconditionally
@@ -39,6 +42,22 @@ public partial class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<MailSyncState>(e =>
+        {
+            e.ToTable("MAIL_SYNC_STATE");
+            e.HasKey(x => x.Account);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UserId);
+        });
+        modelBuilder.Entity<MailReceipt>(e => { e.ToTable("MAIL_RECEIPTS"); e.HasKey(x => x.Key); });
+        modelBuilder.Entity<MailProposal>(e =>
+        {
+            e.ToTable("MAIL_PROPOSALS");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.DueAt).HasColumnType("timestamp without time zone");
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UserId);
+            e.HasOne<MailReceipt>().WithMany().HasForeignKey(x => x.ReceiptKey);
+            e.HasOne<TaskItem>().WithMany().HasForeignKey(x => x.TaskId);
+        });
         modelBuilder.Entity<ReminderDispatch>(entity =>
         {
             entity.ToTable("REMINDER_DISPATCHES");

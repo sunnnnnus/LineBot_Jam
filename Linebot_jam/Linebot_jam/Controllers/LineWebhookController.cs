@@ -32,8 +32,9 @@ public class LineWebhookController(ILineSignatureValidator signatureValidator,
             return BadRequest();
         }
 
-        var events = payload?.Events?.Where(evt => evt.Type == "message" &&
-            evt.Message?.Type == "text" && !string.IsNullOrEmpty(evt.ReplyToken)).ToList();
+        var events = payload?.Events?.Where(evt => !string.IsNullOrEmpty(evt.ReplyToken) &&
+            ((evt.Type == "message" && evt.Message?.Type == "text") ||
+             (evt.Type == "postback" && evt.Postback?.Data?.StartsWith("mail:", StringComparison.Ordinal) == true))).ToList();
         // LINE's Verify request contains no events. No database or AI round trip required.
         if (events is null || events.Count == 0) return Ok();
 

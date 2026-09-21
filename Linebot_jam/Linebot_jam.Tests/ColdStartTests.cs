@@ -74,6 +74,15 @@ public class ColdStartTests
     }
 
     [TestMethod]
+    public async Task MailPostbackIsPersistedThroughVerifiedWebhook()
+    {
+        var queue = new FakeQueue();
+        const string body = """{"events":[{"webhookEventId":"click-1","type":"postback","replyToken":"reply","source":{"type":"user","userId":"user-1"},"postback":{"data":"mail:edit:00000000000000000000000000000001:1","params":{"datetime":"2026-09-25T09:00"}}}]}""";
+        Assert.IsInstanceOfType(await Controller(body, queue).Post(default), typeof(OkResult));
+        Assert.AreEqual(1, queue.Calls);
+    }
+
+    [TestMethod]
     public async Task InvalidReplyTokenFallsBackToPushWithPersistentRetryKey()
     {
         var job = Job();

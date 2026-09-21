@@ -6,6 +6,7 @@ namespace Linebot_jam.Services;
 public class PendingLineReply
 {
     public string? MessagesJson { get; private set; }
+    public void SetMessages(IEnumerable<object> messages) => MessagesJson = JsonSerializer.Serialize(messages);
 
     public Task ReplyMessageAsync(string replyToken, string text)
     {

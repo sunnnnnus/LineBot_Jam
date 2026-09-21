@@ -48,6 +48,12 @@ public class LineEventProcessor
             return;
         }
 
+        if (text.Trim() == "我的識別碼" && evt.Source?.Type == "user")
+        {
+            await _messagingClient.ReplyMessageAsync(replyToken, $"你的 LINE userId：\n{user.LineUserId}\n可用於個人郵件通知的收件人設定。");
+            return;
+        }
+
         var now = DateTime.Now;
         var pendingActive = user.PendingUpdatedAt.HasValue && now - user.PendingUpdatedAt.Value < TimeSpan.FromMinutes(10);
         if (!pendingActive) ClearPending(user);

@@ -80,6 +80,8 @@ public class WebhookBackgroundService(IServiceScopeFactory scopes,
                 await scope.ServiceProvider.GetRequiredService<ReminderProcessor>().QueueDueRemindersAsync(ct);
             else if (evt.Timestamp > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - evt.Timestamp > 10 * 60 * 1000)
                 await reply.ReplyMessageAsync(evt.ReplyToken!, "服務剛恢復，這則訊息已超過 10 分鐘，尚未執行。請重新傳送要處理的事項。");
+            else if (evt.Type == "postback" || evt.Message?.Text?.TrimStart().StartsWith("郵件時間", StringComparison.Ordinal) == true)
+                await scope.ServiceProvider.GetRequiredService<Mail.MailInteraction>().HandleAsync(evt);
             else
                 await scope.ServiceProvider.GetRequiredService<LineEventProcessor>().HandleTextMessageAsync(evt);
 

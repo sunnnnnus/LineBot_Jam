@@ -14,6 +14,18 @@ public class LineEvent
     public LineSource? Source { get; set; }
     public long Timestamp { get; set; }
     public LineMessage? Message { get; set; }
+    public LinePostback? Postback { get; set; }
+}
+
+public class LinePostback
+{
+    public string? Data { get; set; }
+    public LinePostbackParams? Params { get; set; }
+}
+
+public class LinePostbackParams
+{
+    public string? Datetime { get; set; }
 }
 
 public class LineSource
